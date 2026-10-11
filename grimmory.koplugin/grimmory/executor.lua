@@ -164,29 +164,26 @@ local function enable_wifi(timeout)
     local wifi_needs_disable = false
 
     if not NetworkManager:isWifiOn() then
-        wifi_needs_disable = true
+        -- Use `enableWifi` rather than `requestToTurnOnWifi`: only its
+        -- connectivity check clears NetworkManager's `pending_connection`
+        -- flag (and broadcasts NetworkConnected).  Without it every later
+        -- attempt is rejected with EBUSY and WiFi is never turned on again.
+        local result = NetworkManager:enableWifi(nil, false)
 
-        local result = NetworkManager:requestToTurnOnWifi(
-            function()
-                logger:dbg("Wifi is active, waiting for connecitivty")
-            end
-        )
-
-        -- Explicit `false` means something went wrong trying
-        -- to turn on wifi - so we shouldn't try to turn it off again.
+        -- Explicit `false` means turning on wifi failed, and
+        -- `enableWifi` has already torn the attempt down.
         if result == false then
-            logger:err("Failed to turn on wifi: Unknown")
-
-            -- Clean up the connection the same as `NetworkManager:enableWifi` would
-            pcall(NetworkManager._abortWifiConnection, NetworkManager)
+            logger:err("Failed to turn on wifi")
             return false, false
         end
 
-        -- "EBUSY" (16) means we are either waiting for connectivity
-        -- or just tried to disable?
-        if result == 16 then
-            logger:err("Failed to turn on wifi: EBUSY")
-            return false, false
+        -- `nil` means another connection attempt (e.g. WiFi restore after
+        -- resume) is ongoing: wait for it, but don't turn off WiFi we didn't
+        -- turn on.
+        if result == nil then
+            logger:dbg("WiFi connection attempt already ongoing, waiting for it")
+        else
+            wifi_needs_disable = true
         end
     end
 
@@ -238,7 +235,11 @@ function GrimmoryExecutor:background(callback, with_wifi)
                 -- If wifi was enabled, disable it again
                 if wifi_needs_disable then
                     logger:dbg("Disabling WiFi after execution")
-                    NetworkManager:turnOffWifi()
+                    -- `disableWifi` cancels any pending connectivity check and
+                    -- broadcasts NetworkDisconnected.  Flagged interactive so
+                    -- `wifi_was_on` is reset and KOReader does not restore the
+                    -- WiFi we only turned on for this sync after resume / restart.
+                    NetworkManager:disableWifi(nil, true)
                 end
             end
 
