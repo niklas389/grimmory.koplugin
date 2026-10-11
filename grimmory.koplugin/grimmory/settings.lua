@@ -28,6 +28,8 @@ local logger = GrimmoryLogger:new()
 ---@field sync_on_suspend boolean
 ---@field sync_on_power_off boolean
 ---@field sync_enable_wifi boolean
+---@field sync_progress_on_open boolean
+---@field sync_progress_on_resume boolean
 ---@field sync_periodically boolean
 ---@field sync_frequency number
 ---@field sync_shelves boolean
@@ -55,6 +57,8 @@ local DEFAULTS = {
     sync_on_suspend = false,
     sync_on_power_off = false,
     sync_enable_wifi = false,
+    sync_progress_on_open = true,
+    sync_progress_on_resume = false,
     sync_periodically = false,
     sync_frequency = 120,
     sync_shelves = true,
@@ -409,6 +413,32 @@ end
 
 function GrimmorySettings:toggleSyncEnableWifi()
     self.data.sync_enable_wifi = not self:getSyncEnableWifi()
+    self:write()
+end
+
+function GrimmorySettings:getSyncProgressOnOpen()
+    if self.data.sync_progress_on_open == nil then
+        return DEFAULTS.sync_progress_on_open
+    end
+
+    return self.data.sync_progress_on_open
+end
+
+function GrimmorySettings:toggleSyncProgressOnOpen()
+    self.data.sync_progress_on_open = not self:getSyncProgressOnOpen()
+    self:write()
+end
+
+function GrimmorySettings:getSyncProgressOnResume()
+    if self.data.sync_progress_on_resume == nil then
+        return DEFAULTS.sync_progress_on_resume
+    end
+
+    return self.data.sync_progress_on_resume
+end
+
+function GrimmorySettings:toggleSyncProgressOnResume()
+    self.data.sync_progress_on_resume = not self:getSyncProgressOnResume()
     self:write()
 end
 

@@ -224,14 +224,14 @@ function Grimmory:onSuspend()
     if self.settings:getSyncOnSuspend() then
        -- KOReader turns WiFi off right after the Suspend event (WiFi left on
        -- can deadlock suspend on Kobo), so only sync over an existing connection.
-       self:onGrimmorySync(false, nil, nil, false)
+       self:onGrimmorySync(false, nil, nil, { allow_enable_wifi = false })
     end
 end
 
 function Grimmory:onResume()
     logger:dbg("Device is resuming")
 
-    if self.settings:getSyncReadingProgress() then
+    if self.settings:getSyncReadingProgress() and self.settings:getSyncProgressOnResume() then
         self:pullProgressForOpenBook()
     end
 
@@ -246,14 +246,14 @@ function Grimmory:onPowerOff()
     if self.settings:getSyncOnPowerOff() then
        -- The device shuts down before WiFi could connect, so only sync
        -- over an existing connection.
-       self:onGrimmorySync(false, nil, nil, false)
+       self:onGrimmorySync(false, nil, nil, { allow_enable_wifi = false })
     end
 end
 
 function Grimmory:onReaderReady()
     logger:dbg("Document open and ready")
 
-    if self.settings:getSyncReadingProgress() then
+    if self.settings:getSyncReadingProgress() and self.settings:getSyncProgressOnOpen() then
         self:pullProgressForOpenBook()
     end
 
@@ -279,7 +279,7 @@ function Grimmory:onCloseDocument()
     if self.settings:getSyncOnCloseDocument() then
         -- Do not block the UI thread
         UIManager:nextTick(function()
-            self:onGrimmorySync(false)
+            self:onGrimmorySync(false, nil, nil, { notify = true })
         end)
     end
 end
@@ -489,9 +489,12 @@ end
 ---@param verbose boolean
 ---@param book_path string|nil Only synchronize this book
 ---@param refresh_book boolean|nil
----@param allow_enable_wifi boolean|nil Set to false to never turn on WiFi for this sync
-function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, allow_enable_wifi)
-    local enable_wifi = allow_enable_wifi ~= false and self.settings:getSyncEnableWifi()
+---@param options { allow_enable_wifi: boolean|nil, notify: boolean|nil }|nil
+---  allow_enable_wifi: set to false to never turn on WiFi for this sync.
+---  notify: show a non-blocking notification while a non-verbose sync runs.
+function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
+    options = options or {}
+    local enable_wifi = options.allow_enable_wifi ~= false and self.settings:getSyncEnableWifi()
 
     -- Tell everything to flush so we have data available for our sync
     UIManager:broadcastEvent(Event:new("FlushSettings"))
@@ -538,6 +541,8 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, allow_enable_
                 queue_terminate,
                 _("Continue synchronization?")
             )
+        elseif options.notify then
+            close_callback = self.dialog_manager:notify(_("Grimmory: synchronizing…"))
         end
 
         local last_progress_step = 0
@@ -669,6 +674,8 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, allow_enable_
                     self.dialog_manager:toast(
                         _("Failed to Synchronize with Grimmory")
                     )
+                elseif options.notify then
+                    self.dialog_manager:notify(_("Grimmory: synchronization failed"), 3)
                 end
             end
 

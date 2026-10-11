@@ -76,6 +76,35 @@ end
 function GrimmoryMenu:getAutomaticSyncOptionsMenu()
     return {
         {
+            text = _("Check Progress on Open Document"),
+            enabled_func = function()
+                return self.settings:getSyncReadingProgress()
+            end,
+            checked_func = function()
+                return self.settings:getSyncProgressOnOpen()
+            end,
+            callback = function()
+                self.settings:toggleSyncProgressOnOpen()
+                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
+            end,
+            keep_menu_open = true,
+        },
+        {
+            text = _("Check Progress on Wake"),
+            enabled_func = function()
+                return self.settings:getSyncReadingProgress()
+            end,
+            checked_func = function()
+                return self.settings:getSyncProgressOnResume()
+            end,
+            callback = function()
+                self.settings:toggleSyncProgressOnResume()
+                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
+            end,
+            keep_menu_open = true,
+            separator = true,
+        },
+        {
             text = _("On Close Document"),
             checked_func = function()
                 return self.settings:getSyncOnCloseDocument()
