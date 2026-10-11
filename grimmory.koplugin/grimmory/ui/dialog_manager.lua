@@ -6,6 +6,7 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local Event = require("ui/event")
 local InfoMessage = require("ui/widget/infomessage")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
+local Notification = require("ui/widget/notification")
 local UIManager = require("ui/uimanager")
 local PathChooser = require("ui/widget/pathchooser")
 local ProgressbarDialog = require("ui/widget/progressbardialog")
@@ -62,6 +63,23 @@ function DialogManager:toast(text, timeout)
     self.info_message = info_message
 
     return function() UIManager:close(info_message) end
+end
+
+--- Show a small notification at the top of the screen.  Unlike `toast` it
+--- does not block input: any tap or key press closes it and still reaches
+--- the reader, so it can stay up while work runs in the background.
+---@param text string
+---@param timeout number | nil Seconds until it closes; `nil` keeps it until closed
+---@return function close
+function DialogManager:notify(text, timeout)
+    local notification = Notification:new({
+        text = text,
+        timeout = timeout,
+    })
+
+    UIManager:show(notification)
+
+    return function() UIManager:close(notification) end
 end
 
 function DialogManager:showConnectionSettings()
@@ -312,11 +330,13 @@ function DialogManager:showDownloadDirectorySettings()
     UIManager:show(dialog)
 end
 
-function DialogManager:showPluginUpdateCheck(skip_version_check)
+---@param skip_version_check boolean | nil
+---@param check_error string | nil Error of a check that already ran
+function DialogManager:showPluginUpdateCheck(skip_version_check, check_error)
     if not skip_version_check then
         -- Refresh the latest version on open.
         local close_message = self:toast(_("Checking for Updates"), 0)
-        self.updater:fetchLatestVersion()
+        check_error = select(2, self.updater:fetchLatestVersion())
         pcall(close_message)
     end
 
@@ -326,6 +346,11 @@ function DialogManager:showPluginUpdateCheck(skip_version_check)
 
     local update_button_text = _("No update available")
     local title = _("Grimmory.koplugin is currently up-to-date.")
+
+    if check_error then
+        -- Don't claim to be up-to-date when the check itself failed.
+        title = T(_("Could not check for updates.\n%1"), check_error)
+    end
 
     if is_update_available then
         update_button_text = T(_("Update to %1"), latest_version)
@@ -349,9 +374,9 @@ function DialogManager:showPluginUpdateCheck(skip_version_check)
                 {
                     text = _("Check for Updates"),
                     callback = function()
-                        self.updater:fetchLatestVersion()
+                        local fetch_error = select(2, self.updater:fetchLatestVersion())
                         UIManager:close(dialog)
-                        self:showPluginUpdateCheck(true)
+                        self:showPluginUpdateCheck(true, fetch_error)
                     end,
                 },
             },

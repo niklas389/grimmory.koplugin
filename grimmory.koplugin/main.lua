@@ -366,6 +366,11 @@ function Grimmory:pullProgressForOpenBook()
         return
     end
 
+    if not self.settings:getSyncEnableWifi() and not self:isWifiConnected() then
+        logger:dbg("No connectivity and WiFi may not be enabled, skipping progress check")
+        return
+    end
+
     local book_path = self.ui.document.file
 
     -- Tell everything to flush so we have data available for our sync
@@ -373,14 +378,29 @@ function Grimmory:pullProgressForOpenBook()
 
     self.executor:background(
         function(run)
-            local ok, latest_progress = run(
+            -- Connecting WiFi and asking the server can take a while, so show
+            -- that something is happening (without blocking reading).
+            local close_notification = self.dialog_manager:notify(
+                _("Grimmory: checking reading progress…")
+            )
+
+            local run_ok, ok, latest_progress = pcall(
+                run,
                 function()
                     local _, _, latest_progress = self.reading_progress_manager:getNewerProgressForBook(book_path)
                     return latest_progress
                 end
             )
 
-            if not ok or not latest_progress then
+            pcall(close_notification)
+
+            if not run_ok or not ok then
+                logger:err("Could not check reading progress", run_ok and latest_progress or ok)
+                self.dialog_manager:notify(_("Grimmory: could not check reading progress"), 3)
+                return
+            end
+
+            if not latest_progress then
                 return
             end
 

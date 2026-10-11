@@ -4,5 +4,5 @@ return {
     fullname = _("Grimmory Sync"),
     description = _([[Synchronize reading info with Grimmory.]]),
     version = "0.0.0-snapshot",
-    repository = "grimmory-tools/grimmory.koplugin"
+    repository = "niklas389/grimmory.koplugin"
 }
