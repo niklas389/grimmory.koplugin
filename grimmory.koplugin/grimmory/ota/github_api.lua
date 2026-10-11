@@ -155,6 +155,10 @@ function GithubAPI:getReleaseAsset(repository, version, name_filter)
         return false, nil
     end
 
+    if type(release.assets) ~= "table" then
+        return false, nil
+    end
+
     for _, asset in ipairs(release.assets) do
         if asset ~= nil then
             if name_filter == nil then
@@ -195,7 +199,7 @@ function GithubAPI:downloadReleaseArchive(repository, version, name_filter, down
         download_file:write(chunk)
         bytes_downloaded = bytes_downloaded + #chunk
 
-        if progress_callback and asset.size > 0 then
+        if progress_callback and type(bytes_total) == "number" and bytes_total > 0 then
             progress_callback(bytes_downloaded, bytes_total)
         end
 

@@ -6,24 +6,36 @@ local GrimmoryLogger = require("grimmory/logger")
 local logger = GrimmoryLogger:new()
 
 ---@class GrimmoryScheduler
-local GrimmoryScheduler = {
-    intervals = {},
-    cancellables = {},
-}
+local GrimmoryScheduler = {}
 
 function GrimmoryScheduler:new(o)
     o = o or {}
     setmetatable(o, self)
     self.__index = self
+
+    -- Per-instance state.  These must not live on the class table, otherwise
+    -- every plugin instance (FileManager, each ReaderUI) shares them and one
+    -- instance's `clear()` cancels another instance's tasks.
+    o.intervals = o.intervals or {}
+    o.cancellables = o.cancellables or {}
+
     return o
 end
 
 function GrimmoryScheduler:clear()
     self.intervals = {}
 
+    -- Copy first, `cancel()` mutates `self.cancellables`
+    local cancels = {}
     for _, cancel in pairs(self.cancellables) do
+        table.insert(cancels, cancel)
+    end
+
+    for _, cancel in ipairs(cancels) do
         cancel()
     end
+
+    self.cancellables = {}
 end
 
 
@@ -34,6 +46,9 @@ function GrimmoryScheduler:schedule(timeout, callback, ...)
     local task_id = Random:uuid()
 
     local scheduled_task = function(...)
+        -- Once fired, the task can no longer be cancelled; drop the
+        -- reference so `cancellables` does not grow with every run.
+        self.cancellables[task_id] = nil
         callback(...)
     end
 
@@ -55,7 +70,9 @@ end
 ---@param callback function the function to call
 ---@param ... any parameters to pass to the callback
 function GrimmoryScheduler:interval(frequency, callback, ...)
-    local extra_parameters = table.pack(...)
+    -- `table.pack` / `table.unpack` only exist with Lua 5.2 compat enabled
+    local extra_parameters = { n = select("#", ...), ... }
+    local unpack_fn = table.unpack or unpack
 
     local interval_id = Random:uuid()
 
@@ -81,7 +98,7 @@ function GrimmoryScheduler:interval(frequency, callback, ...)
         interval.last_schedule = os.time()
         interval.cancel = recurring_cancel
 
-        callback(table.unpack(extra_parameters))
+        callback(unpack_fn(extra_parameters, 1, extra_parameters.n))
     end
 
     logger:dbg("Scheduling interval", interval_id, "in", frequency, "seconds")

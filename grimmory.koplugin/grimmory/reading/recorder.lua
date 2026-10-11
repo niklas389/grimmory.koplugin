@@ -74,6 +74,13 @@ end
 ---@param session_id number
 ---@param event_type ReadingSessionEventType
 function ReadingRecorder:emitSessionEvent(session_id, event_type)
+    if session_id == nil then
+        -- `book_event.session_id` is NOT NULL; without a session the insert
+        -- would only fail with a constraint error.
+        logger:dbg("No active session, skipping event:", event_type)
+        return
+    end
+
     local current_page = self:getOpenBookCurrentPage()
     local total_pages = self:getOpenBookTotalPages()
     local xpointer = self:getOpenBookXPointer()
@@ -123,14 +130,18 @@ function ReadingRecorder:onSessionStart()
 end
 
 function ReadingRecorder:onAnnotationAdded()
+    -- A session may not be active yet (e.g. right after adopting progress)
+    self:onSessionStart()
     self:emitSessionEvent(self.session_id, "annotation-added")
 end
 
 function ReadingRecorder:onAnnotationRemoved()
+    self:onSessionStart()
     self:emitSessionEvent(self.session_id, "annotation-removed")
 end
 
 function ReadingRecorder:onAnnotationUpdated()
+    self:onSessionStart()
     self:emitSessionEvent(self.session_id, "annotation-updated")
 end
 

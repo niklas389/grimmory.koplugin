@@ -168,7 +168,11 @@ function ReadingProgressManager:getRemoteProgressForBook(book_path)
     local koreader_auth_id, koreader_auth_secret = self:getCredentials()
 
     if koreader_auth_id == nil or koreader_auth_secret == nil then
-        logger:dbg("Skipping progress push because no credentials")
+        logger:dbg("Skipping progress pull because no credentials")
+        return nil, nil, nil
+    end
+
+    if not util.fileExists(book_path) then
         return nil, nil, nil
     end
 
@@ -216,7 +220,8 @@ function ReadingProgressManager:getRemoteProgressForBook(book_path)
     local source_progress = {
         book_path = book_path,
         book_md5 = progress.document,
-        end_time = progress.timestamp,
+        -- compareProgress() compares end_time numerically; never leave it nil
+        end_time = tonumber(progress.timestamp) or 0,
         end_progress = progress.percentage * 100,
         end_page = page,
         end_xpointer = xpointer,
@@ -244,7 +249,9 @@ function ReadingProgressManager:applyProgress(progress)
             end
         end
 
-        self.ui:handleEvent(Event:new("GoToPercent", tonumber(progress.end_progress)))
+        -- KOReader's handlers are `onGotoPercent` (ReaderRolling / ReaderPaging);
+        -- "GoToPercent" would dispatch to a non-existent `onGoToPercent`.
+        self.ui:handleEvent(Event:new("GotoPercent", tonumber(progress.end_progress)))
     else
         -- Write doc metadata
         self.doc_metadata:setProgress(

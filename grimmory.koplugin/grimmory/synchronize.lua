@@ -185,12 +185,18 @@ function GrimmorySynchronize:pushBookAnnotations(book_path, book_grimmory_id)
         self.doc_metadata:removeModifiedGrimmoryAnnotation(book_path, modified_id)
     end
 
+    ---@type { [integer]: integer }
+    local created_ids_by_local_index = {}
+    local created_any = false
+
     for _, annotation in ipairs(local_annotations) do
         if annotation.id ~= nil and is_modified_by_id[tostring(annotation.id)] then
             annotation.id = nil
         end
 
-        if annotation.id == nil then
+        if annotation.id == nil and annotation.cfi == nil then
+            logger:warn("Skipping annotation without CFI:", book_path)
+        elseif annotation.id == nil then
             -- This is a "new" annotation.
             local create_ok, remote_annotation = self.api:createAnnotation(
                 book_grimmory_id,
@@ -204,10 +210,30 @@ function GrimmorySynchronize:pushBookAnnotations(book_path, book_grimmory_id)
 
             if create_ok then
                 logger:dbg("Created annotation for book:", book_path)
+
+                local remote_id = type(remote_annotation) == "table" and tonumber(remote_annotation.id) or nil
+                if remote_id and annotation.local_index then
+                    created_ids_by_local_index[annotation.local_index] = remote_id
+                    created_any = true
+                end
             else
                 logger:err("Failed to push annotation", remote_annotation)
             end
         end
+    end
+
+    if created_any then
+        -- Link the local annotations to what was just created, so they are
+        -- matched by ID (not only by position) and never pushed twice.
+        local doc_annotations = self.doc_metadata:getAnnotations(book_path)
+
+        for local_index, remote_id in pairs(created_ids_by_local_index) do
+            if doc_annotations[local_index] ~= nil then
+                doc_annotations[local_index].grimmory_id = remote_id
+            end
+        end
+
+        self.doc_metadata:setAnnotations(book_path, doc_annotations)
     end
 end
 
@@ -250,7 +276,7 @@ function GrimmorySynchronize:pushAllPendingBookMetadata(callback)
         pcall(self.pushBookMetadata, self, book_id, callback)
 
         callback({
-            state = "push-book-metadata",
+            state = "book-push-metadata",
             book_id = book_id,
             pushed_books = index,
             total_books = #book_ids,
@@ -316,6 +342,7 @@ function GrimmorySynchronize:synchronizeShelves(callback)
 
     local shelf_id_to_name = {}
     local shelf_name_to_id = {}
+    local shelf_ids = {}
 
     -- Make sure we have our unique shelf names and ID mappings
     for _, shelf in ipairs(shelves) do
@@ -342,12 +369,23 @@ function GrimmorySynchronize:synchronizeShelves(callback)
 
             -- use tostring to get a sparse table
             shelf_id_to_name[tostring(shelf.id)] = unique_shelf_name
+            shelf_ids[tostring(shelf.id)] = shelf.id
         end
     end
 
-    -- Read through existing collections and compare against shelves
+    -- Snapshot names first: renaming a collection adds a key to
+    -- `ReadCollection.coll`, which is undefined behaviour inside `pairs()`.
+    local collection_names = {}
     for collection_name, _ in pairs(ReadCollection.coll) do
-        local shelf_id = ReadCollection.coll_settings[collection_name].connectorId
+        table.insert(collection_names, collection_name)
+    end
+
+    -- Read through existing collections and compare against shelves
+    for _, collection_name in ipairs(collection_names) do
+        local collection_settings = ReadCollection.coll_settings[collection_name] or {}
+        ReadCollection.coll_settings[collection_name] = collection_settings
+
+        local shelf_id = collection_settings.connectorId
 
         if shelf_id then
             if shelf_id_to_name[tostring(shelf_id)] then
@@ -360,6 +398,7 @@ function GrimmorySynchronize:synchronizeShelves(callback)
                     logger:info("Renaming collection to match shelf name:", collection_name, ";", shelf_name)
 
                     ReadCollection:renameCollection(collection_name, shelf_name)
+                    collection_name = shelf_name
 
                     callback({
                         state = "shelf-rename",
@@ -371,17 +410,17 @@ function GrimmorySynchronize:synchronizeShelves(callback)
                 logger:info("Disconnecting collection from shelf:", collection_name)
                 -- This was a shelf but the shelf is gone in the connector
                 -- Don't delete the shelf but break the connection.
-                ReadCollection.coll_settings[collection_name].connectorId = nil
-
-                -- Set the shelf ID to nil so the block below will pick
-                -- it up if it's a shelf being deleted and recreated
-                shelf_id = nil
+                collection_settings.connectorId = nil
 
                 callback({
                     state = "shelf-disconnect",
                     shelf_id = shelf_id,
                     shelf_name = collection_name,
                 })
+
+                -- Set the shelf ID to nil so the block below will pick
+                -- it up if it's a shelf being deleted and recreated
+                shelf_id = nil
             end
         end
 
@@ -405,9 +444,21 @@ function GrimmorySynchronize:synchronizeShelves(callback)
         end
     end
 
+    -- Shelves that already have a connected collection (by ID, independent
+    -- of the collection name's case)
+    local connected_shelves = {}
+    for collection_name, _ in pairs(ReadCollection.coll) do
+        local collection_settings = ReadCollection.coll_settings[collection_name]
+        if collection_settings and collection_settings.connectorId ~= nil then
+            connected_shelves[tostring(collection_settings.connectorId)] = true
+        end
+    end
+
     -- Make sure every shelf has a collection and create them if not
-    for shelf_id, shelf_name in pairs(shelf_id_to_name) do
-        if not ReadCollection.coll_settings[shelf_name] then
+    for shelf_key, shelf_name in pairs(shelf_id_to_name) do
+        local shelf_id = shelf_ids[shelf_key]
+
+        if not connected_shelves[shelf_key] and not ReadCollection.coll_settings[shelf_name] then
             logger:info("Adding a collection from a shelf", shelf_name, shelf_id)
 
             ReadCollection:addCollection(shelf_name)
@@ -431,9 +482,15 @@ function GrimmorySynchronize:removeEmptyShelves(callback)
         return
     end
 
-    -- Read through existing collections and compare against shelves
+    local collection_names = {}
     for collection_name, _ in pairs(ReadCollection.coll) do
-        local shelf_id = ReadCollection.coll_settings[collection_name].connectorId
+        table.insert(collection_names, collection_name)
+    end
+
+    -- Read through existing collections and compare against shelves
+    for _, collection_name in ipairs(collection_names) do
+        local collection_settings = ReadCollection.coll_settings[collection_name] or {}
+        local shelf_id = collection_settings.connectorId
         local books = ReadCollection:getOrderedCollection(collection_name)
 
         if shelf_id and #books == 0 then
@@ -459,7 +516,19 @@ function GrimmorySynchronize:pullBookProgress(book_path)
         return
     end
 
-    local _, _, progress = self.reading_progress_manager:getRemoteProgressForBook(book_path)
+    local ui = self.reading_progress_manager.ui
+    if ui and ui.document and ui.document.file == book_path then
+        -- This runs in the sync subprocess, where navigating the open
+        -- document has no effect.  The open book is handled in the
+        -- foreground by the "Go to latest location" confirmation.
+        logger:dbg("Skipping progress pull for open book:", book_path)
+        return
+    end
+
+    -- Only adopt remote progress when it is newer than what was recorded
+    -- locally, otherwise local reading that has not been pushed yet (e.g.
+    -- a failed push) would be overwritten by older remote progress.
+    local _, _, progress = self.reading_progress_manager:getNewerProgressForBook(book_path)
 
     if progress then
         self.reading_progress_manager:applyProgress(progress)
@@ -556,7 +625,8 @@ function GrimmorySynchronize:associateWithShelves(book_path, shelves)
     local local_shelves = {}
     local shelf_id_to_name = {}
     for collection_name, _ in pairs(ReadCollection.coll) do
-        local shelf_id = ReadCollection.coll_settings[collection_name].connectorId
+        local collection_settings = ReadCollection.coll_settings[collection_name] or {}
+        local shelf_id = collection_settings.connectorId
 
         if shelf_id then
             shelf_id_to_name[tostring(shelf_id)] = collection_name
@@ -769,8 +839,7 @@ function GrimmorySynchronize:pullBooks(callback)
     local directory_exists, directory_error_message = util.makePath(download_directory)
     if not directory_exists then
         logger:err("Failed to create download directory", directory_error_message)
-        error("Failed to create download directory", directory_error_message)
-        return
+        error("Failed to create download directory: " .. tostring(directory_error_message))
     end
 
     local seen_books = {}
@@ -943,13 +1012,23 @@ function GrimmorySynchronize:synchronizeBook(book_path, refresh_book, callback)
         end
     end
 
-    -- Pull annotations from Grimmory
-    if grimmory_id then
+    -- Push / pull annotations with Grimmory
+    if grimmory_id and self.settings:getSyncAnnotations() then
+        -- Annotation errors (e.g. a position that cannot be converted to a
+        -- CFI) must not prevent progress and sessions from being pushed.
         logger:info("Pushing book annotations:", book_path)
-        self:pushBookAnnotations(book_path, grimmory_id)
+        local push_ok, push_error = pcall(self.pushBookAnnotations, self, book_path, grimmory_id)
+        if not push_ok then
+            logger:err("Failed pushing annotations:", book_path, "-", push_error)
+        end
 
         logger:info("Pulling book annotations:", book_path)
-        self:pullBookAnnotations(book_path, grimmory_id)
+        local pull_ok, pull_error = pcall(self.pullBookAnnotations, self, book_path, grimmory_id)
+        if not pull_ok then
+            logger:err("Failed pulling annotations:", book_path, "-", pull_error)
+        end
+    elseif grimmory_id then
+        logger:info("Annotation sync skipped because feature is disabled:", book_path)
     end
 
     -- First, tell Grimmory about all of our reading

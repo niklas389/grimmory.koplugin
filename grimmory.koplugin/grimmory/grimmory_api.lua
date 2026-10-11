@@ -5,6 +5,7 @@ local json = require("json")
 local ltn12 = require("ltn12")
 
 local PluginMetadata = require("grimmory/plugin_metadata")
+local GrimmoryDateTime = require("grimmory/datetime")
 local GrimmoryLogger = require("grimmory/logger")
 
 local logger = GrimmoryLogger:new()
@@ -56,18 +57,8 @@ end
 
 ---@param value string
 local function from_iso8601(value)
-    local year, month, day, hour, min, sec = value:match(
-        "(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)"
-    )
-
-    return os.time({
-        year = year,
-        month = month,
-        day = day,
-        hour = hour,
-        min = min,
-        sec = sec
-    })
+    -- Grimmory timestamps are UTC; `os.time()` would treat them as local time
+    return GrimmoryDateTime.parseUtc(value)
 end
 
 local function from_json_iso8601(value)
@@ -185,7 +176,7 @@ function GrimmoryAPI:refreshToken(refresh_token)
 
     local ok, _, body = self:rawRequest("POST", uri, credentials)
 
-    if not ok or not body then
+    if not ok or type(body) ~= "table" then
         return false, nil, nil, 0
     end
 
@@ -213,7 +204,7 @@ function GrimmoryAPI:getToken(base_uri, username, password)
 
     local ok, _, body = self:rawRequest("POST", uri, credentials)
 
-    if not ok or not body then
+    if not ok or type(body) ~= "table" then
         if type(body) == "string" then
             logger:err("Unable to get refresh token:", body)
             return false, body, body, 0
@@ -305,7 +296,7 @@ function GrimmoryAPI:rawRequest(method, uri, data, headers, sink)
     return true, code, response
 end
 
-function GrimmoryAPI:request(method, path, data, headers, sink)
+function GrimmoryAPI:request(method, path, data, headers, sink, is_retry)
     headers = headers or {}
 
     local uri = self:getUri(path)
@@ -359,6 +350,12 @@ function GrimmoryAPI:request(method, path, data, headers, sink)
         self.cached_token_expiry = nil
         self.cached_refresh_token = nil
         self.cached_access_token = nil
+
+        -- Retry once with a fresh token.  Not possible with a caller-provided
+        -- sink, which has already consumed the (error) response body.
+        if not is_retry and sink == nil then
+            return self:request(method, path, data, headers, nil, true)
+        end
     end
 
 
@@ -391,7 +388,7 @@ function GrimmoryAPI:testConnection(base_uri, username, password)
         headers
     )
 
-    if not ok then
+    if not ok or type(body) ~= "table" then
         return false, body
     end
 
@@ -406,7 +403,7 @@ function GrimmoryAPI:getServerVersion()
         "/api/v1/version"
     )
 
-    if not ok then
+    if not ok or type(body) ~= "table" then
         if body then
             return false, tostring(body)
         else
@@ -426,9 +423,13 @@ function GrimmoryAPI:getBooksPage(page_number)
         "/api/v1/books/page?sort=addedOn&page=" .. tostring(page_number or 0)
     )
 
-    if not ok or type(body) == "string" then
+    if not ok or type(body) ~= "table" then
+        -- A 2xx response that is not JSON (e.g. an HTML page from a proxy or
+        -- captive portal) must be an error.  Treating it as "no books" makes
+        -- the sync remove every downloaded book from its shelves (or delete
+        -- them when "Permanently Delete Removed Books" is enabled).
         logger:err("Could not get books", body)
-        return ok, body, 0
+        return false, body, 0
     end
 
     local books = {}
@@ -508,6 +509,10 @@ function GrimmoryAPI:downloadBook(book_id, destination_path)
 
     local ok, code, message = self:request("GET", path, nil, nil, sink)
 
+    -- The file sink only closes the handle once the body is complete; make
+    -- sure it is closed on connection errors, too (already closed is fine).
+    pcall(io.close, destination_file)
+
     if not ok then
         os.remove(destination_path)
 
@@ -527,7 +532,7 @@ function GrimmoryAPI:getShelves()
         "/api/v1/shelves"
     )
 
-    if not ok then
+    if not ok or type(body) ~= "table" then
         logger:err("Could not get shelves", body)
         return false, body
     end
@@ -599,7 +604,7 @@ function GrimmoryAPI:getKoreaderSync()
         "/api/v1/koreader-users/me"
     )
 
-    if not ok or not body then
+    if not ok or type(body) ~= "table" then
         logger:err("Could not get koreader sync status", body)
         return false, nil
     end
@@ -631,7 +636,7 @@ function GrimmoryAPI:getKoreaderCredentials()
         "/api/v1/koreader-users/me"
     )
 
-    if not ok or not body then
+    if not ok or type(body) ~= "table" then
         logger:err("Could not get koreader credentials", body)
         return false, nil, nil
     end

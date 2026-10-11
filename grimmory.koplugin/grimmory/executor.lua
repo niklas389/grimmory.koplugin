@@ -115,6 +115,7 @@ local function wrap_coroutine(func)
 end
 
 ---@return bool enabled_wifi
+---@return bool connected
 local function enable_wifi(timeout)
     if timeout == nil then
         timeout = 45
@@ -122,13 +123,13 @@ local function enable_wifi(timeout)
 
     if NetworkManager:isWifiOn() and NetworkManager:isConnected() then
         logger:dbg("WiFi is already Active")
-        return false
+        return false, true
     end
 
     if not Device:hasWifiToggle() then
         -- Clean up standby before continuing.
         logger:err("Requested with wifi but cannot enable")
-        return false
+        return false, NetworkManager:isConnected()
     end
 
     local running_coroutine = coroutine.running()
@@ -177,15 +178,15 @@ local function enable_wifi(timeout)
             logger:err("Failed to turn on wifi: Unknown")
 
             -- Clean up the connection the same as `NetworkManager:enableWifi` would
-            pcall(NetworkManager, NetworkManager._abortWifiConnection, NetworkManager)
-            return false
+            pcall(NetworkManager._abortWifiConnection, NetworkManager)
+            return false, false
         end
 
         -- "EBUSY" (16) means we are either waiting for connectivity
         -- or just tried to disable?
         if result == 16 then
             logger:err("Failed to turn on wifi: EBUSY")
-            return false
+            return false, false
         end
     end
 
@@ -200,7 +201,7 @@ local function enable_wifi(timeout)
     end
 
     logger:dbg("Continuing after wifi")
-    return wifi_needs_disable
+    return wifi_needs_disable, connectivity_result == true
 end
 
 ---@alias GrimmoryRunnableProgressCallback function(state: any, terminate: function): bool
@@ -230,14 +231,32 @@ function GrimmoryExecutor:background(callback, with_wifi)
             -- We want the executor to attempt to connect to wifi before it runs
             -- anything, and if it turns this on we should disable it afterwards, too.
             local wifi_needs_disable = false
+
+            local function finish()
+                UIManager:allowStandby()
+
+                -- If wifi was enabled, disable it again
+                if wifi_needs_disable then
+                    logger:dbg("Disabling WiFi after execution")
+                    NetworkManager:turnOffWifi()
+                end
+            end
+
             if with_wifi then
                 logger:dbg("Execution requested WiFi")
-                wifi_needs_disable = enable_wifi()
+                local wifi_connected
+                wifi_needs_disable, wifi_connected = enable_wifi()
+
+                if not wifi_connected then
+                    logger:err("No connectivity after trying to enable WiFi")
+                    finish()
+                    return false, "No connectivity"
+                end
             end
 
             if was_terminated then
-                UIManager:allowStandby()
-                return false, "Termianted before starting subprocess"
+                finish()
+                return false, "Terminated before starting subprocess"
             end
 
             local running_coroutine = coroutine.running()
@@ -281,8 +300,13 @@ function GrimmoryExecutor:background(callback, with_wifi)
             subprocess_pid = new_subprocess_pid
 
             if was_terminated then
-                ffiutil.terminateSubProcess(subprocess_pid)
-                UIManager:allowStandby()
+                if subprocess_pid then
+                    ffiutil.terminateSubProcess(subprocess_pid)
+                end
+                if parent_read_fd then
+                    pcall(ffi.C.close, parent_read_fd)
+                end
+                finish()
                 return false, "Terminated before starting subprocess"
             end
 
@@ -342,15 +366,18 @@ function GrimmoryExecutor:background(callback, with_wifi)
                         break
                     end
                 end
+            else
+                logger:err("Failed to start subprocess")
+                subprocess_result = "Failed to start subprocess"
             end
 
-            UIManager:allowStandby()
-
-            -- If wifi was enabled, disable it again
-            if wifi_needs_disable then
-                logger:dbg("Disabling WiFi after execution")
-                NetworkManager:turnOffWifi()
+            -- The parent end of the pipe is never closed by `runInSubProcess`,
+            -- so close it here or every sync leaks a file descriptor.
+            if parent_read_fd then
+                pcall(ffi.C.close, parent_read_fd)
             end
+
+            finish()
 
             return subprocess_ok, subprocess_result
         end

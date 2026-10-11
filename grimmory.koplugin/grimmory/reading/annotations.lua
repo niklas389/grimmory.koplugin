@@ -1,6 +1,10 @@
 local DocumentRegistry = require("document/documentregistry")
 
 local GrimmoryCFIResolver = require("grimmory/cfi_resolver")
+local GrimmoryDateTime = require("grimmory/datetime")
+local GrimmoryLogger = require("grimmory/logger")
+
+local logger = GrimmoryLogger:new()
 
 
 ---@param value integer
@@ -23,48 +27,58 @@ local function to_annotation_datetime(value)
 end
 
 ---@param value string
----@return integer timestamp
+---@return integer | nil timestamp
 local function from_annotation_datetime(value)
-    if value == nil then
+    if type(value) ~= "string" then
         return nil
     end
 
-    local year, month, day, hour, min, sec = value:match(
-        "(%d+)-(%d+)-(%d+) (%d+):(%d+):(%d+)"
-    )
+    -- Values written by this plugin are UTC with a "Z" suffix, values
+    -- written by KOReader itself are local time without a suffix.
+    if value:match("Z%s*$") then
+        return GrimmoryDateTime.parseUtc(value)
+    end
 
-    return os.time({
-        year = year,
-        month = month,
-        day = day,
-        hour = hour,
-        min = min,
-        sec = sec
-    })
+    return GrimmoryDateTime.parseLocal(value)
 end
 
 ---@param document_path string
 ---@param callback (fun(resolver: GrimmoryCFIResolver): nil)
+---@return boolean resolved whether a resolver could be created and the callback ran
 local function with_cfi_resolver(document_path, callback)
     local document = (
         DocumentRegistry:hasProvider(document_path) and
         DocumentRegistry:openDocument(document_path)
     )
 
-    if document then
-        local loaded = true
-        if document.loadDocument then
-            loaded = document:loadDocument(true)
-        end
-
-        if loaded then
-            local cfi_resolver = GrimmoryCFIResolver:new(document)
-
-            callback(cfi_resolver)
-        end
-
-        document:close()
+    if not document then
+        return false
     end
+
+    local resolved = false
+
+    -- CFIs only exist for reflowable (CRE / EPUB) documents
+    local loaded = document.loadDocument ~= nil and document.getHTMLFromXPointer ~= nil
+    if loaded then
+        loaded = document:loadDocument(true)
+    end
+
+    if loaded then
+        local cfi_resolver = GrimmoryCFIResolver:new(document)
+
+        local ok, err = pcall(callback, cfi_resolver)
+        if ok then
+            resolved = true
+        else
+            logger:err("Annotation conversion failed:", document_path, "-", err)
+        end
+    else
+        logger:dbg("Document does not support CFI annotations:", document_path)
+    end
+
+    document:close()
+
+    return resolved
 end
 
 local KOREADER_COLOR_MAP = {
@@ -144,8 +158,13 @@ local function is_same_xpointer(a, b)
     return normalize_xpointer(a) == normalize_xpointer(b)
 end
 
----@param book_path string
-local function merge_annotations(local_annotations, remote_annotations)
+---@param local_annotations table[]
+---@param remote_annotations table[]
+---@param unresolved_grimmory_ids? { [string]: boolean } remote annotations that exist
+---       but could not be converted; local copies are kept untouched
+local function merge_annotations(local_annotations, remote_annotations, unresolved_grimmory_ids)
+    unresolved_grimmory_ids = unresolved_grimmory_ids or {}
+
     local remote_grimmory_ids = {}
     for _, a in ipairs(remote_annotations) do
         if a.grimmory_id ~= nil then
@@ -163,7 +182,11 @@ local function merge_annotations(local_annotations, remote_annotations)
             local_grimmory_ids[tostring(a.grimmory_id)] = a
         end
 
-        if a.grimmory_id == nil or remote_grimmory_ids[tostring(a.grimmory_id)] then
+        if (
+            a.grimmory_id == nil or
+            remote_grimmory_ids[tostring(a.grimmory_id)] or
+            unresolved_grimmory_ids[tostring(a.grimmory_id)]
+        ) then
             table.insert(new_annotations, a)
         end
     end
@@ -227,42 +250,66 @@ end
 ---@param annotations GrimmoryAnnotation[]
 function GrimmoryReadingAnnotations:applyAnnotations(book_path, grimmory_annotations)
     local remote_annotations = {}
+    local unresolved_grimmory_ids = {}
 
-    with_cfi_resolver(
+    local resolved = with_cfi_resolver(
         book_path,
         function (cfi_resolver)
             for _, annotation in ipairs(grimmory_annotations) do
-                local xpointer_start, xpointer_end = cfi_resolver:cfiRangeToXPointers(
-                    annotation.cfi
-                )
+                local convert_ok, xpointer_start, xpointer_end = false, nil, nil
 
-                local koreader_annotation = {
-                    grimmory_id = annotation.id,
+                if type(annotation.cfi) == "string" then
+                    convert_ok, xpointer_start, xpointer_end = pcall(
+                        cfi_resolver.cfiRangeToXPointers,
+                        cfi_resolver,
+                        annotation.cfi
+                    )
+                end
 
-                    datetime = to_annotation_datetime(annotation.created_at),
-                    datetime_updated = to_annotation_datetime(annotation.updated_at),
+                if not convert_ok or type(xpointer_start) ~= "string" or type(xpointer_end) ~= "string" then
+                    -- Never write an annotation without a position: KOReader
+                    -- would treat it as a broken bookmark.
+                    logger:warn("Skipping annotation that cannot be resolved:", annotation.id, annotation.cfi)
 
-                    color = GRIMMORY_COLOR_MAP[annotation.color] or DEFAULT_KOREADER_COLOR,
-                    drawer = GRIMMORY_STYLE_MAP[annotation.style] or DEFAULT_KOREADER_STYLE,
+                    if annotation.id ~= nil then
+                        unresolved_grimmory_ids[tostring(annotation.id)] = true
+                    end
+                else
+                    local koreader_annotation = {
+                        grimmory_id = annotation.id,
 
-                    chapter = annotation.chapter,
-                    text = annotation.text,
-                    note = annotation.note,
+                        datetime = to_annotation_datetime(annotation.created_at),
+                        datetime_updated = to_annotation_datetime(annotation.updated_at),
 
-                    page = xpointer_start,
+                        color = GRIMMORY_COLOR_MAP[annotation.color] or DEFAULT_KOREADER_COLOR,
+                        drawer = GRIMMORY_STYLE_MAP[annotation.style] or DEFAULT_KOREADER_STYLE,
 
-                    pos0 = xpointer_start,
-                    pos1 = xpointer_end,
-                }
+                        chapter = annotation.chapter,
+                        text = annotation.text,
+                        note = annotation.note,
 
-                table.insert(remote_annotations, koreader_annotation)
+                        page = xpointer_start,
+
+                        pos0 = xpointer_start,
+                        pos1 = xpointer_end,
+                    }
+
+                    table.insert(remote_annotations, koreader_annotation)
+                end
             end
         end
     )
 
+    if not resolved then
+        -- Without a resolver nothing could be converted.  Merging an empty
+        -- remote list would delete every synced local annotation.
+        logger:warn("Not applying annotations, document could not be resolved:", book_path)
+        return
+    end
+
     local local_annotations = self.doc_metadata:getAnnotations(book_path)
 
-    local new_annotations = merge_annotations(local_annotations, remote_annotations)
+    local new_annotations = merge_annotations(local_annotations, remote_annotations, unresolved_grimmory_ids)
 
     self.doc_metadata:setAnnotations(book_path, new_annotations)
 end
@@ -277,16 +324,35 @@ function GrimmoryReadingAnnotations:getAnnotations(book_path)
     with_cfi_resolver(
         book_path,
         function(cfi_resolver)
-            for _, annotation in ipairs(annotations) do
-                -- Annotations without pos0 / pos1 are bookmarks
-                if annotation.pos0 ~= nil and annotation.pos1 ~= nil then
+            for local_index, annotation in ipairs(annotations) do
+                -- Annotations without pos0 / pos1 are bookmarks; non-string
+                -- positions (tables) come from paged documents (PDF/DjVu)
+                -- and have no CFI representation.
+                local cfi = nil
+                if type(annotation.pos0) == "string" and type(annotation.pos1) == "string" then
+                    local cfi_ok, cfi_result = pcall(
+                        cfi_resolver.xpointerRangeToCFI,
+                        cfi_resolver,
+                        annotation.pos0,
+                        annotation.pos1
+                    )
+
+                    if cfi_ok then
+                        cfi = cfi_result
+                    else
+                        logger:warn("Skipping annotation that cannot be converted to CFI:", annotation.pos0, cfi_result)
+                    end
+                end
+
+                if cfi ~= nil then
                     ---@type GrimmoryAnnotation
                     local grimmory_annotation = {
+                        local_index = local_index,
                         id = annotation.grimmory_id,
                         book_id = -1,
                         created_at = from_annotation_datetime(annotation.datetime),
                         updated_at = from_annotation_datetime(annotation.datetime_updated),
-                        cfi = cfi_resolver:xpointerRangeToCFI(annotation.pos0, annotation.pos1),
+                        cfi = cfi,
                         chapter = annotation.chapter,
                         text = annotation.text,
                         note = annotation.note,

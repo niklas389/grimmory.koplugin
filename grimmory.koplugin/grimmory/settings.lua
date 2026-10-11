@@ -98,11 +98,24 @@ function GrimmorySettings:init()
         return self.settings:readSetting(SETTING_KEY, {}) or {}
     end)
 
-    if success then
+    if success and type(result) == "table" then
         self.data = result
     else
         logger:err("Error reading settings, using defaults", result)
-        self.data = DEFAULTS
+
+        -- Copy so later setters do not mutate the shared DEFAULTS table
+        self.data = {}
+        for key, value in pairs(DEFAULTS) do
+            self.data[key] = value
+        end
+
+        self:write()
+    end
+
+    -- DEFAULTS.device_id is regenerated every time KOReader starts.  Persist
+    -- one so the server sees a stable device across restarts.
+    if type(self.data.device_id) ~= "string" or self.data.device_id == "" then
+        self.data.device_id = DEFAULTS.device_id
         self:write()
     end
 end
@@ -231,7 +244,17 @@ function GrimmorySettings:toggleDownloadRemoveBooks()
 end
 
 function GrimmorySettings:getDownloadDirectory()
-    return self.data.sync_download_directory or DEFAULTS.sync_download_directory
+    local directory = self.data.sync_download_directory or DEFAULTS.sync_download_directory
+
+    if type(directory) ~= "string" then
+        return nil
+    end
+
+    -- Strip trailing slashes (but keep "/") so joined paths do not contain
+    -- "//" and match the paths produced when scanning the directory.
+    directory = directory:gsub("(.)/+$", "%1")
+
+    return directory
 end
 
 ---@param directory string

@@ -33,6 +33,11 @@ local GrimmoryReadingProgressManager = require("grimmory/reading/progress_manage
 
 local logger = GrimmoryLogger:new()
 
+-- KOReader instantiates the plugin separately for the FileManager and for
+-- every ReaderUI.  Track synchronization at module level so two instances
+-- can never run a sync at the same time against the same database.
+local sync_in_progress = false
+
 ---@class Grimmory
 ---@field dialog_manager DialogManager
 ---@field scheduler GrimmoryScheduler
@@ -195,6 +200,22 @@ function Grimmory:onExit()
     self.executor:clear()
 end
 
+function Grimmory:onCloseWidget()
+    -- The FileManager / ReaderUI owning this plugin instance is being closed.
+    -- A new instance (with its own interval) is created for the next UI, so
+    -- this instance's periodic sync must stop or syncs pile up over time.
+    logger:dbg("Closing widget, cancelling scheduled tasks")
+
+    if self.periodic_sync_cancel then
+        self.periodic_sync_cancel()
+    end
+
+    self.periodic_sync_cancel = nil
+    self.periodic_sync_update = nil
+
+    self.scheduler:clear()
+end
+
 function Grimmory:onSuspend()
     logger:dbg("Device is suspending")
 
@@ -262,6 +283,10 @@ end
 function Grimmory:onAnnotationsModified(annotation_info)
     logger:dbg("Annotations modified", annotation_info)
 
+    if type(annotation_info) ~= "table" then
+        return
+    end
+
     local annotation = annotation_info[1]
 
     local is_modified = false
@@ -276,7 +301,7 @@ function Grimmory:onAnnotationsModified(annotation_info)
     end
 
     if is_modified and self.ui ~= nil and self.ui.document ~= nil and self.ui.document.file ~= nil then
-        if annotation.grimmory_id ~= nil then
+        if type(annotation) == "table" and annotation.grimmory_id ~= nil then
             self.doc_metadata:appendModifiedGrimmoryAnnotation(
                 self.ui.document.file,
                 annotation.grimmory_id
@@ -332,6 +357,11 @@ function Grimmory:pullProgressForOpenBook()
         return
     end
 
+    if self.settings:getBaseUri() == "" then
+        -- Not configured, don't try to reach a server (or turn on WiFi)
+        return
+    end
+
     local book_path = self.ui.document.file
 
     -- Tell everything to flush so we have data available for our sync
@@ -362,7 +392,7 @@ function Grimmory:isReadyToSync()
         return false
     end
 
-    if self.is_synchronizing then
+    if self.is_synchronizing or sync_in_progress then
         logger:info("Synchronization is already happening, not ready to sync again")
         return false
     end
@@ -443,11 +473,17 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book)
 
         -- Run in the foreground, as something with background tasks and
         -- network management causes Android devices to SIGABRT.
-        if not self:isWifiConnected() then
+        --
+        -- When "Enable WiFi" is active, the executor turns WiFi on (in the
+        -- foreground) before starting the subprocess and checks connectivity
+        -- itself, so this pre-check must not abort the sync early.
+        if not self.settings:getSyncEnableWifi() and not self:isWifiConnected() then
             logger:err("Cannot sync without connectivity")
-            self.dialog_manager:toast(
-                _("Failed to Synchronize with Grimmory: No Connectivity")
-            )
+            if verbose then
+                self.dialog_manager:toast(
+                    _("Failed to Synchronize with Grimmory: No Connectivity")
+                )
+            end
             return
         end
 
@@ -462,6 +498,7 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book)
         end
 
         self.is_synchronizing = true
+        sync_in_progress = true
         self.menu:onGrimmorySyncStart(queue_terminate)
 
         local update_callback, close_callback
@@ -495,7 +532,10 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book)
         -- In the future, we should limit what we sync
         -- to current or recent books.  For now, we sync everything.
 
-        local ok, result = run(
+        -- Protect the call so the "synchronizing" flags are always reset,
+        -- otherwise a single unexpected error blocks every later sync.
+        local run_ok, ok, result = pcall(
+            run,
             function(progress_callback)
                 if book_path then
                     self.synchronizer:synchronizeBook(book_path, refresh_book, progress_callback)
@@ -504,7 +544,7 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book)
                 end
             end,
             function(progress)
-                if type(progress) ~= "table" then
+                if type(progress) ~= "table" or type(progress.state) ~= "string" then
                     return
                 end
 
@@ -570,7 +610,13 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book)
             end
         )
 
+        if not run_ok then
+            result = ok
+            ok = false
+        end
+
         self.is_synchronizing = false
+        sync_in_progress = false
         self.menu:onGrimmorySyncComplete()
 
         if close_callback then
@@ -613,12 +659,24 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book)
             UIManager:broadcastEvent(Event:new("InvalidateMetadataCache", book_path))
 
             if self.ui and self.ui.file_chooser then
-                self.ui.file_chooser.resetBookInfoCache(book_path)
+                if type(self.ui.file_chooser.resetBookInfoCache) == "function" then
+                    self.ui.file_chooser.resetBookInfoCache(book_path)
+                end
                 self.ui.file_chooser:init()
             end
         end
 
-        self:refreshUI()
+        -- Only reload the open document when this sync was for that document.
+        -- Reloading after every full / periodic / on-suspend sync interrupts
+        -- reading, and a full sync never rewrites the open book's settings.
+        if (
+            book_path ~= nil and
+            self.ui ~= nil and
+            self.ui.document ~= nil and
+            self.ui.document.file == book_path
+        ) then
+            self:refreshUI()
+        end
 
         if verbose then
             local message = {

@@ -13,6 +13,11 @@ local GrimmoryLogger = require("grimmory/logger")
 local logger = GrimmoryLogger:new()
 
 local function verifyDigest(path, digest)
+    if type(digest) ~= "string" then
+        logger:err("Release asset has no digest, refusing to install")
+        return false
+    end
+
     local digest_type, expected_digest_hex = digest:match("(%w+):(%x+)")
 
     if digest_type ~= "sha256" then
@@ -34,7 +39,7 @@ local function verifyDigest(path, digest)
 
     local actual_digest_hex = sha2.sha256(content)
 
-    if expected_digest_hex ~= actual_digest_hex then
+    if expected_digest_hex:lower() ~= tostring(actual_digest_hex):lower() then
         logger:err("Digest mismatch:", expected_digest_hex, "!=", actual_digest_hex)
         return false
     end
@@ -83,29 +88,85 @@ local function parseVersion(version)
     return tonumber(major) or 0, tonumber(minor) or 0, tonumber(patch) or 0, prerelease, build
 end
 
+---@param prerelease_a string | nil
+---@param prerelease_b string | nil
+---@return integer comparison -1 if a < b, 0 if equal, 1 if a > b (SemVer rules)
+local function comparePrerelease(prerelease_a, prerelease_b)
+    if prerelease_a == prerelease_b then
+        return 0
+    end
+
+    -- A version without a prerelease ranks higher than one with it
+    if prerelease_a == nil or prerelease_a == "" then
+        return 1
+    end
+
+    if prerelease_b == nil or prerelease_b == "" then
+        return -1
+    end
+
+    local identifiers_a = {}
+    for identifier in prerelease_a:gmatch("[^%.]+") do
+        table.insert(identifiers_a, identifier)
+    end
+
+    local identifiers_b = {}
+    for identifier in prerelease_b:gmatch("[^%.]+") do
+        table.insert(identifiers_b, identifier)
+    end
+
+    for i = 1, math.max(#identifiers_a, #identifiers_b) do
+        local a = identifiers_a[i]
+        local b = identifiers_b[i]
+
+        if a == nil then
+            return -1
+        elseif b == nil then
+            return 1
+        end
+
+        local number_a = a:match("^%d+$") and tonumber(a)
+        local number_b = b:match("^%d+$") and tonumber(b)
+
+        if number_a and number_b then
+            if number_a ~= number_b then
+                return number_a < number_b and -1 or 1
+            end
+        elseif number_a then
+            return -1
+        elseif number_b then
+            return 1
+        elseif a ~= b then
+            return a < b and -1 or 1
+        end
+    end
+
+    return 0
+end
+
 ---@param version_a string
 ---@param version_b string
+---@return boolean is_later true when version_b is later than version_a
 local function isVersionLater(version_a, version_b)
     local major_a, minor_a, patch_a, prerelease_a = parseVersion(version_a)
     local major_b, minor_b, patch_b, prerelease_b = parseVersion(version_b)
 
-    if major_b > major_a then
-        return true
+    -- Compare component by component; a lower component on a more
+    -- significant position must not be outweighed by a less significant one
+    -- (e.g. 1.5.0 -> 1.4.9 is not an update).
+    if major_b ~= major_a then
+        return major_b > major_a
     end
 
-    if minor_b > minor_a then
-        return true
+    if minor_b ~= minor_a then
+        return minor_b > minor_a
     end
 
-    if patch_b > patch_a then
-        return true
+    if patch_b ~= patch_a then
+        return patch_b > patch_a
     end
 
-    if prerelease_b ~= prerelease_a then
-        return true
-    end
-
-    return false
+    return comparePrerelease(prerelease_a, prerelease_b) < 0
 end
 
 ---@class GrimmorySelfUpdater
@@ -227,6 +288,11 @@ function GrimmorySelfUpdater:extractPlugin(source_path, target_path)
 
     local plugin_root = findPluginInArchive(reader)
 
+    local function fail(message)
+        pcall(reader.close, reader)
+        return false, message
+    end
+
     for entry in reader:iterate() do
         if entry.mode == "file" and entry.path:sub(0, #plugin_root) == plugin_root then
             local entry_path = entry.path:sub(#plugin_root + 1)
@@ -241,11 +307,14 @@ function GrimmorySelfUpdater:extractPlugin(source_path, target_path)
             local ok = reader:extractToPath(entry.path, extract_path)
 
             if not ok then
-                return false, T(g("Failed to extract file: %1"), entry.path)
+                return fail(T(g("Failed to extract file: %1"), entry.path))
             end
 
         end
     end
+
+    pcall(reader.close, reader)
+
     return true, nil
 end
 

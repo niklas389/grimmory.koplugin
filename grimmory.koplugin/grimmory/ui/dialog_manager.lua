@@ -14,6 +14,20 @@ local GrimmoryLogger = require("grimmory/logger")
 
 local logger = GrimmoryLogger:new()
 
+---@param value any
+---@param fallback number
+---@param minimum number
+---@return number
+local function parse_number(value, fallback, minimum)
+    local number = tonumber(value)
+
+    if number == nil or number ~= number then
+        number = fallback
+    end
+
+    return math.max(minimum, number)
+end
+
 ---@class DialogManager
 ---@field settings GrimmorySettings
 ---@field api GrimmoryAPI
@@ -123,9 +137,9 @@ function DialogManager:showTargetShelvesSettings()
     local dialog
     local ok, result = self.api:getShelves()
 
-    if not ok or type(result) == "string" then
+    if not ok or type(result) ~= "table" then
         logger:err("Something went wrong loading shelves", result)
-        self:toast(T(_("Could not load shelves: %1"), result))
+        self:toast(T(_("Could not load shelves: %1"), tostring(result)))
         return
     end
 
@@ -198,7 +212,7 @@ function DialogManager:showSyncFrequencySettings()
         title = _("Periodic Sync Frequency"),
         fields = {
             {
-                text = self.settings:getSyncFrequency(),
+                text = tostring(self.settings:getSyncFrequency()),
                 description = _("Minutes between synchronization"),
                 input_type = "number"
             },
@@ -217,7 +231,9 @@ function DialogManager:showSyncFrequencySettings()
                     callback = function()
                         local fields = dialog:getFields()
 
-                        self.settings:setSyncFrequency(math.max(1, fields[1]))
+                        self.settings:setSyncFrequency(
+                            parse_number(fields[1], self.settings:getSyncFrequency(), 1)
+                        )
 
                         UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
 
@@ -237,12 +253,12 @@ function DialogManager:showSessionThresholdSettings()
         title = _("Session Thresholds"),
         fields = {
             {
-                text = self.settings:getSessionThresholdSeconds(),
+                text = tostring(self.settings:getSessionThresholdSeconds()),
                 description = _("Minimum Session Seconds"),
                 input_type = "number",
             },
             {
-                text = self.settings:getSessionThresholdPages(),
+                text = tostring(self.settings:getSessionThresholdPages()),
                 description = _("Minimum Session Pages"),
                 input_type = "number",
             },
@@ -261,8 +277,12 @@ function DialogManager:showSessionThresholdSettings()
                 callback = function()
                     local fields = dialog:getFields()
 
-                    self.settings:setSessionThresholdSeconds(math.max(0, fields[1]))
-                    self.settings:setSessionThresholdPages(math.max(0, fields[2]))
+                    self.settings:setSessionThresholdSeconds(
+                        parse_number(fields[1], self.settings:getSessionThresholdSeconds(), 0)
+                    )
+                    self.settings:setSessionThresholdPages(
+                        parse_number(fields[2], self.settings:getSessionThresholdPages(), 0)
+                    )
 
                     UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
 
@@ -426,7 +446,7 @@ function DialogManager:showApplyProgressConfirmation(progress)
     local dialog = ConfirmBox:new({
         text = T(
             _("Go to latest location %1% from Grimmory?"),
-            tostring(progress.end_progress)
+            string.format("%.1f", tonumber(progress.end_progress) or 0)
         ),
         ok_callback = function()
             self.reading_progress_manager:applyProgress(progress)

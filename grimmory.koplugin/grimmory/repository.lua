@@ -114,7 +114,23 @@ function GrimmoryLocalRepository:getMigrations()
         end
     )
 
-    table.sort(sql_files)
+    -- Sort by the numeric prefix ("10_x.sql" must run after "2_x.sql");
+    -- a plain string sort would run them out of order.
+    local function migration_number(path)
+        local _, filename = util.splitFilePathName(path)
+        return tonumber((filename or ""):match("^(%d+)")) or math.huge
+    end
+
+    table.sort(sql_files, function(a, b)
+        local number_a = migration_number(a)
+        local number_b = migration_number(b)
+
+        if number_a == number_b then
+            return a < b
+        end
+
+        return number_a < number_b
+    end)
 
     return sql_files
 end
@@ -127,13 +143,19 @@ function GrimmoryLocalRepository:runMigrations()
         logger:dbg("Running SQL file path:", sql_filepath)
 
         if sql ~= nil then
-            with_database(
+            local ok, result = with_database(
                 self.database_path,
                 function(database)
                     database:exec(sql)
                 end,
                 "rwc"
             )
+
+            if not ok then
+                -- Migrations are re-run on every start; non-idempotent ones
+                -- (ALTER TABLE ... ADD) are expected to fail once applied.
+                logger:dbg("Migration did not apply:", sql_filepath, "-", result)
+            end
         end
     end
 end
@@ -150,9 +172,19 @@ end
 ---@return integer | nil grimmory_id
 function GrimmoryLocalRepository:upsertBook(book_path, grimmory_id)
     -- Resolve path for file.
-    local absolute_book_path = ffiUtil.realpath(book_path)
+    local absolute_book_path = book_path and ffiUtil.realpath(book_path)
+
+    if absolute_book_path == nil then
+        logger:err("Cannot upsert book, path does not resolve:", book_path)
+        return false, nil, nil
+    end
 
     local partial_md5 = util.partialMD5(absolute_book_path)
+
+    if partial_md5 == nil then
+        logger:err("Cannot upsert book, unable to hash:", absolute_book_path)
+        return false, nil, nil
+    end
 
     local ok, book = with_database(
         self.database_path,
@@ -265,7 +297,11 @@ end
 ---@return integer | nil grimmory_id
 function GrimmoryLocalRepository:findBookByFile(book_path, partial_md5)
     -- Resolve path for file.
-    local absolute_book_path = ffiUtil.realpath(book_path)
+    local absolute_book_path = book_path and ffiUtil.realpath(book_path)
+
+    if absolute_book_path == nil or partial_md5 == nil then
+        return true, nil, nil
+    end
 
     local ok, book = with_database(
         self.database_path,
@@ -457,7 +493,7 @@ function GrimmoryLocalRepository:getReadingProgress(book_id, cutoff)
                     FROM book_event e
                     JOIN book_session s ON s.id = e.session_id
                     WHERE
-                        e.created_at < ?
+                        e.created_at <= ?
                     GROUP BY s.book_id
                 ) AS last_event
                 JOIN book_event ON last_event.event_id = book_event.id
