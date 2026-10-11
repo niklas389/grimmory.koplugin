@@ -222,7 +222,9 @@ function Grimmory:onSuspend()
     self.reading_recorder:onSessionEnd()
 
     if self.settings:getSyncOnSuspend() then
-       self:onGrimmorySync(false)
+       -- KOReader turns WiFi off right after the Suspend event (WiFi left on
+       -- can deadlock suspend on Kobo), so only sync over an existing connection.
+       self:onGrimmorySync(false, nil, nil, false)
     end
 end
 
@@ -242,7 +244,9 @@ function Grimmory:onPowerOff()
     self.reading_recorder:onSessionEnd()
 
     if self.settings:getSyncOnPowerOff() then
-       self:onGrimmorySync(false)
+       -- The device shuts down before WiFi could connect, so only sync
+       -- over an existing connection.
+       self:onGrimmorySync(false, nil, nil, false)
     end
 end
 
@@ -462,7 +466,13 @@ function Grimmory:refreshUI()
     self.ui:reloadDocument()
 end
 
-function Grimmory:onGrimmorySync(verbose, book_path, refresh_book)
+---@param verbose boolean
+---@param book_path string|nil Only synchronize this book
+---@param refresh_book boolean|nil
+---@param allow_enable_wifi boolean|nil Set to false to never turn on WiFi for this sync
+function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, allow_enable_wifi)
+    local enable_wifi = allow_enable_wifi ~= false and self.settings:getSyncEnableWifi()
+
     -- Tell everything to flush so we have data available for our sync
     UIManager:broadcastEvent(Event:new("FlushSettings"))
 
@@ -477,7 +487,7 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book)
         -- When "Enable WiFi" is active, the executor turns WiFi on (in the
         -- foreground) before starting the subprocess and checks connectivity
         -- itself, so this pre-check must not abort the sync early.
-        if not self.settings:getSyncEnableWifi() and not self:isWifiConnected() then
+        if not enable_wifi and not self:isWifiConnected() then
             logger:err("Cannot sync without connectivity")
             if verbose then
                 self.dialog_manager:toast(
@@ -709,7 +719,7 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book)
 
     self.executor:background(
         background_callback,
-        self.settings:getSyncEnableWifi()
+        enable_wifi
     )
 end
 
