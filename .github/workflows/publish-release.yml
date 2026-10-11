@@ -1,18 +1,27 @@
-name: On Release Draft
+name: Publish Release
 
 on:
+  # Release created by hand in the GitHub UI: build and attach the archive.
   release:
     types:
       - published
+  # "Run workflow" in the Actions tab: create the tag and release, then attach
+  # the archive. Done in one run because a release created with the workflow's
+  # token does not trigger the `release` event above.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (SemVer, e.g. 1.2.3)"
+        required: true
+        type: string
 
 jobs:
   attach-archive:
-    name: 
+    name: Build and attach plugin archive
     runs-on: ubuntu-latest
 
     permissions:
       contents: write
-      packages: write
 
     steps:
       - name: Checkout Repository
@@ -20,14 +29,33 @@ jobs:
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
+      - name: Determine Tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -e
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="${INPUT_VERSION#v}"
+
+            # The self-updater compares versions as SemVer
+            if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$'; then
+              echo "::error::'$INPUT_VERSION' is not a SemVer version (e.g. 1.2.3)"
+              exit 1
+            fi
+
+            echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+          else
+            echo "TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+          fi
       - name: Update `_meta`
         env:
-          VERSION: ${{ github.event.release.tag_name }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -ex
 
-          sed 's~\(version = \)".\+"~\1"'${VERSION//v}'"~' -i grimmory.koplugin/_meta.lua
+          sed 's~\(version = \)".\+"~\1"'${TAG#v}'"~' -i grimmory.koplugin/_meta.lua
           sed 's~\(repository = \)".\+"~\1"'$REPOSITORY'"~' -i grimmory.koplugin/_meta.lua
       - name: Create archive
         run: |
@@ -42,8 +70,17 @@ jobs:
           name: grimmory.koplugin.zip
           path: grimmory.koplugin.zip
           retention-days: 30
-      - name: Attach Artifact to GitHub Release
+      - name: Create GitHub Release
+        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$RELEASE_TAG" grimmory.koplugin.zip --clobber
+        run: |
+          gh release create "$TAG" grimmory.koplugin.zip \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --generate-notes
+      - name: Attach Artifact to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" grimmory.koplugin.zip --clobber
