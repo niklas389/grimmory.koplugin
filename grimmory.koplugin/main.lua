@@ -276,10 +276,14 @@ function Grimmory:onCloseDocument()
 
     self.reading_recorder:onSessionEnd()
 
-    if self.settings:getSyncOnCloseDocument() then
+    if self.settings:getSyncOnCloseDocument() and self.ui and self.ui.document and self.ui.document.file then
+        -- Only push this book's reading progress; the whole library is
+        -- synchronized by the periodic / manual sync.
+        local book_path = self.ui.document.file
+
         -- Do not block the UI thread
         UIManager:nextTick(function()
-            self:onGrimmorySync(false, nil, nil, { notify = true })
+            self:onGrimmorySync(false, book_path, nil, { notify = true, progress_only = true })
         end)
     end
 end
@@ -489,9 +493,10 @@ end
 ---@param verbose boolean
 ---@param book_path string|nil Only synchronize this book
 ---@param refresh_book boolean|nil
----@param options { allow_enable_wifi: boolean|nil, notify: boolean|nil }|nil
+---@param options { allow_enable_wifi: boolean|nil, notify: boolean|nil, progress_only: boolean|nil }|nil
 ---  allow_enable_wifi: set to false to never turn on WiFi for this sync.
 ---  notify: show a non-blocking notification while a non-verbose sync runs.
+---  progress_only: only push reading progress and sessions of `book_path`.
 function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
     options = options or {}
     local enable_wifi = options.allow_enable_wifi ~= false and self.settings:getSyncEnableWifi()
@@ -551,6 +556,7 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
         local book_download_count = 0
         local book_refresh_count = 0
         local book_error_count = 0
+        local progress_error_count = 0
 
         local update_progress_step = function(progress_step)
             if progress_step <= last_progress_step then
@@ -572,7 +578,9 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
         local run_ok, ok, result = pcall(
             run,
             function(progress_callback)
-                if book_path then
+                if book_path and options.progress_only then
+                    self.synchronizer:synchronizeBookProgress(book_path, progress_callback)
+                elseif book_path then
                     self.synchronizer:synchronizeBook(book_path, refresh_book, progress_callback)
                 else
                     self.synchronizer:synchronizeAll(progress_callback)
@@ -617,6 +625,10 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
 
                     -- Step 5, 6, 7, 8, 9 are all pulling books down
                     update_progress_step(4 + math.floor((viewed_books / total_books) * 5))
+                end
+
+                if progress.state == "progress-failed" then
+                    progress_error_count = progress_error_count + 1
                 end
 
                 if progress.state == "session-recorded" then
@@ -674,6 +686,22 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
                     self.dialog_manager:toast(
                         _("Failed to Synchronize with Grimmory")
                     )
+                elseif options.notify then
+                    self.dialog_manager:notify(_("Grimmory: synchronization failed"), 3)
+                end
+            end
+
+            return
+        end
+
+        if options.progress_only then
+            -- Nothing on the device changed, so there is nothing to refresh.
+            -- Reloading here would also reopen the document being closed.
+            if progress_error_count > 0 or session_error_count > 0 then
+                logger:err("Failed pushing reading progress for:", book_path)
+
+                if verbose then
+                    self.dialog_manager:toast(_("Failed to Synchronize with Grimmory"))
                 elseif options.notify then
                     self.dialog_manager:notify(_("Grimmory: synchronization failed"), 3)
                 end

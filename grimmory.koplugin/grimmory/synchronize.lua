@@ -975,6 +975,28 @@ function GrimmorySynchronize:synchronizeAll(callback)
     logger:info("Done synchronizing")
 end
 
+--- Push only the local reading progress and sessions of one book.
+--- Used when a document is closed: no annotations, shelves, downloads or
+--- remote progress pulls, so it finishes quickly.
+---@param book_path string
+---@param callback function
+function GrimmorySynchronize:synchronizeBookProgress(book_path, callback)
+    if not self:checkForHealthyServer() then
+        error("Cannot connect to valid server")
+    end
+
+    local book_ok, book_id = self.repository:upsertBook(book_path)
+
+    if not book_ok or not book_id then
+        error("Could not track book")
+    end
+
+    logger:info("Pushing reading progress:", book_path)
+    self:pushBookMetadata(book_id, callback)
+
+    logger:info("Done pushing reading progress:", book_path)
+end
+
 function GrimmorySynchronize:synchronizeBook(book_path, refresh_book, callback)
     if not self:checkForHealthyServer() then
         error("Cannot connect to valid server")
