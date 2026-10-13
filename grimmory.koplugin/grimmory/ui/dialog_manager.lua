@@ -12,9 +12,7 @@ local PathChooser = require("ui/widget/pathchooser")
 local ProgressbarDialog = require("ui/widget/progressbardialog")
 local Size = require("ui/size")
 
-local GrimmoryLogger = require("grimmory/logger")
 
-local logger = GrimmoryLogger:new()
 
 -- KOReader's Notification has square corners; give it the rounded corners
 -- of InfoMessage and the other dialogs.
@@ -159,79 +157,6 @@ function DialogManager:showConnectionSettings()
 
     UIManager:show(dialog)
     dialog:onShowKeyboard()
-end
-
-function DialogManager:showTargetShelvesSettings()
-    local dialog
-    local ok, result = self.api:getShelves()
-
-    if not ok or type(result) ~= "table" then
-        logger:err("Something went wrong loading shelves", result)
-        self:toast(T(_("Could not load shelves: %1"), tostring(result)))
-        return
-    end
-
-    local buttons = {
-        {
-            {
-                text = _("Cancel Selection"),
-                callback = function()
-                    UIManager:close(dialog)
-                end,
-            }
-        },
-        {
-            {
-                text = _("All Shelves"),
-                callback = function()
-                    logger:dbg("Set target shelves to All Shelves")
-                    self.settings:setDownloadTargetShelves({})
-
-                    UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
-
-                    UIManager:close(dialog)
-                end,
-            }
-        }
-    }
-
-    local shelfNameToId = {}
-
-    for _, shelf in ipairs(result) do
-        local shelfName = shelf.name
-        local shelfId = shelf.id
-
-        local uniqueShelfName = shelfName
-        local uniqueShelfIndex = 0
-        while shelfNameToId[uniqueShelfName] do
-            uniqueShelfIndex = uniqueShelfIndex + 1
-            uniqueShelfName = shelfName .. " " .. uniqueShelfIndex
-        end
-
-        table.insert(
-            buttons,
-            {
-                {
-                    text = uniqueShelfName,
-                    callback = function()
-                        logger:dbg("Set target shelves to shelf ID", shelfId)
-                        self.settings:setDownloadTargetShelves({ { id = shelfId, name = uniqueShelfName } })
-
-                        UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
-
-                        UIManager:close(dialog)
-                    end
-                }
-            }
-        )
-    end
-
-    dialog = ButtonDialog:new({
-        title = _("Target Shelf"),
-        buttons = buttons,
-    })
-
-    UIManager:show(dialog)
 end
 
 function DialogManager:showSyncFrequencySettings()

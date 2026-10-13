@@ -287,44 +287,61 @@ end
 
 ---@param book Book
 ---@return boolean
+--- Whether the sync should download / keep this book: it is in one of the
+--- download sources, or was downloaded from the library browser.
+---@param book Book
 function GrimmorySynchronize:isTargetBook(book)
     if not book.primary_file or not book.primary_file.filename then
         return false
     end
 
-    local target_shelves = self.settings:getDownloadTargetShelves() or {}
-
-    if #target_shelves == 0 then
+    if self.settings:getDownloadEverything() or self.settings:isKeptBook(book.id) then
         return true
     end
 
-    if not book.shelves then
-        return false
+    if book.library_id and self.settings:isDownloadSource("libraries", book.library_id) then
+        return true
     end
 
-    for _, shelf_id in ipairs(book.shelves) do
-        if self:isTargetShelf(shelf_id) then
+    if book.series_name and self.settings:isDownloadSource("series", book.series_name) then
+        return true
+    end
+
+    for _, shelf_id in ipairs(book.shelves or {}) do
+        if self.settings:isDownloadSource("shelves", shelf_id) then
             return true
         end
+    end
+
+    if self.magic_shelf_book_ids and self.magic_shelf_book_ids[tostring(book.id)] then
+        return true
     end
 
     return false
 end
 
-function GrimmorySynchronize:isTargetShelf(shelf_id)
-    local target_shelves = self.settings:getDownloadTargetShelves() or {}
+--- Magic shelves are rule based, so their books are not part of the book
+--- data; ask the server which books they contain.
+function GrimmorySynchronize:loadMagicShelfBookIds()
+    self.magic_shelf_book_ids = {}
 
-    if #target_shelves == 0 then
-        return true
+    if self.settings:getDownloadEverything() then
+        return
     end
 
-    for _, shelf in ipairs(target_shelves) do
-        if shelf.id == shelf_id then
-            return true
+    for _, magic_shelf in ipairs(self.settings:getDownloadSources("magic_shelves")) do
+        local ok, ids = self.api:getAppBookIds({ magicShelfId = magic_shelf.id })
+
+        if not ok then
+            -- Continuing would treat the shelf's books as removed (and might
+            -- delete them), so stop the book download instead.
+            error("Could not load magic shelf " .. tostring(magic_shelf.name) .. ": " .. tostring(ids))
+        end
+
+        for _, id in ipairs(ids) do
+            self.magic_shelf_book_ids[tostring(id)] = true
         end
     end
-
-    return false
 end
 
 function GrimmorySynchronize:synchronizeShelves(callback)
@@ -804,6 +821,49 @@ function GrimmorySynchronize:pullBook(book)
     return download_path, is_downloaded
 end
 
+--- Download one book chosen in the library browser.  Runs in the sync
+--- subprocess; collections are written so the main process can reload them.
+---@param grimmory_id number
+---@return string book_path
+function GrimmorySynchronize:downloadLibraryBook(grimmory_id)
+    local download_directory = self.settings:getDownloadDirectory()
+    if not download_directory or download_directory == "" then
+        error("Download directory is not set")
+    end
+
+    local directory_exists, directory_error_message = util.makePath(download_directory)
+    if not directory_exists then
+        error("Failed to create download directory: " .. tostring(directory_error_message))
+    end
+
+    local ok, detail = self.api:getAppBookDetail(grimmory_id)
+    if not ok then
+        error("Could not load book: " .. tostring(detail))
+    end
+
+    if not detail.primary_file_name then
+        error("Book has no file to download")
+    end
+
+    ---@type Book
+    local book = {
+        id = detail.id,
+        library_id = detail.library_id,
+        series_name = detail.series_name,
+        shelves = detail.shelves or {},
+        metadata = {
+            title = detail.title,
+            isbn13 = detail.isbn13,
+        },
+        primary_file = { filename = detail.primary_file_name },
+    }
+
+    local book_path = self:pullBook(book)
+    ReadCollection:write()
+
+    return book_path
+end
+
 ---@param book_path string
 function GrimmorySynchronize:removeBook(book_path)
     logger:info("Removing book at:", book_path)
@@ -841,6 +901,8 @@ function GrimmorySynchronize:pullBooks(callback)
         logger:err("Failed to create download directory", directory_error_message)
         error("Failed to create download directory: " .. tostring(directory_error_message))
     end
+
+    self:loadMagicShelfBookIds()
 
     local seen_books = {}
     local seen_grimmory_ids = {}

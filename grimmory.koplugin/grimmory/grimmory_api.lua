@@ -3,6 +3,7 @@ local http = require("socket.http")
 local https = require("ssl.https")
 local json = require("json")
 local ltn12 = require("ltn12")
+local socket_url = require("socket.url")
 
 local PluginMetadata = require("grimmory/plugin_metadata")
 local GrimmoryDateTime = require("grimmory/datetime")
@@ -80,9 +81,43 @@ end
 ---@class BookFile
 ---@field filename string
 
+---@class LibraryBook App API book summary, as listed by the library browser
+---@field id number
+---@field title string
+---@field authors string[]
+---@field series_name string | nil
+---@field series_number number | nil
+---@field library_id number | nil
+---@field read_status string | nil
+---@field read_progress number | nil Percent, 0 - 100
+---@field primary_file_name string | nil
+---@field primary_file_type string | nil
+---@field file_size_kb number | nil
+---@field page_count number | nil
+---@field published_date string | nil
+---@field cover_updated_on string | nil
+
+---@class LibraryPage
+---@field items table[]
+---@field page number
+---@field has_next boolean
+---@field total number
+
+---@class LibraryCollection Library, shelf or magic shelf
+---@field id number
+---@field name string
+---@field book_count number | nil
+
+---@class LibrarySeries
+---@field name string
+---@field book_count number
+---@field authors string[]
+
 ---@class Book
 ---@field id number
 ---@field added_on number
+---@field library_id number | nil
+---@field series_name string | nil
 ---@field shelves number[]
 ---@field metadata BookMetadata
 ---@field primary_file BookFile | nil
@@ -131,6 +166,8 @@ local function parse_book(book)
     return {
         id = from_json_number(book.id),
         added_on = from_json_iso8601(book["addedOn"]),
+        library_id = from_json_number(book["libraryId"]),
+        series_name = from_json_string(book_metadata["seriesName"]),
         shelves = shelves,
         metadata = metadata,
         primary_file = primary_file
@@ -863,6 +900,302 @@ function GrimmoryAPI:updateAnnotation(
     end
 
     return ok
+end
+
+------------------------------------------------------------------------------
+-- App API (/api/v1/app): small, paged and server-side filtered lists, used by
+-- the library browser so it only loads what is shown.
+------------------------------------------------------------------------------
+
+-- The server caps app pages at 50 items.
+local APP_PAGE_SIZE = 50
+
+local function json_null_to_nil(value)
+    -- json.decode.simple decodes JSON null as nil, but be safe with
+    -- decoders that return a sentinel.
+    if type(value) == "userdata" then
+        return nil
+    end
+    return value
+end
+
+---@param params table<string, any>
+local function build_query(params)
+    local keys = {}
+    for key, value in pairs(params) do
+        if value ~= nil and value ~= "" then
+            table.insert(keys, key)
+        end
+    end
+    table.sort(keys)
+
+    local parts = {}
+    for _, key in ipairs(keys) do
+        table.insert(parts, key .. "=" .. socket_url.escape(tostring(params[key])))
+    end
+
+    if #parts == 0 then
+        return ""
+    end
+
+    return "?" .. table.concat(parts, "&")
+end
+
+local function parse_string_list(value)
+    local list = {}
+    if type(value) == "table" then
+        for _, entry in ipairs(value) do
+            if type(entry) == "string" then
+                table.insert(list, entry)
+            end
+        end
+    end
+    return list
+end
+
+---@return LibraryBook
+local function parse_app_book(raw)
+    local progress = from_json_number(json_null_to_nil(raw.readProgress))
+
+    return {
+        id = from_json_number(raw.id),
+        title = from_json_string(json_null_to_nil(raw.title), ""),
+        authors = parse_string_list(raw.authors),
+        series_name = from_json_string(json_null_to_nil(raw.seriesName)),
+        series_number = from_json_number(json_null_to_nil(raw.seriesNumber)),
+        library_id = from_json_number(json_null_to_nil(raw.libraryId)),
+        read_status = from_json_string(json_null_to_nil(raw.readStatus)),
+        read_progress = progress,
+        primary_file_name = from_json_string(json_null_to_nil(raw.primaryFileName)),
+        primary_file_type = from_json_string(json_null_to_nil(raw.primaryFileType)),
+        file_size_kb = from_json_number(json_null_to_nil(raw.fileSizeKb)),
+        page_count = from_json_number(json_null_to_nil(raw.pageCount)),
+        published_date = from_json_string(json_null_to_nil(raw.publishedDate)),
+        cover_updated_on = from_json_string(json_null_to_nil(raw.coverUpdatedOn)),
+    }
+end
+
+---@return LibrarySeries
+local function parse_app_series(raw)
+    return {
+        name = from_json_string(json_null_to_nil(raw.seriesName), ""),
+        book_count = from_json_number(json_null_to_nil(raw.bookCount), 0),
+        authors = parse_string_list(raw.authors),
+    }
+end
+
+---@return LibraryCollection
+local function parse_app_collection(raw)
+    return {
+        id = from_json_number(raw.id),
+        name = from_json_string(json_null_to_nil(raw.name), ""),
+        book_count = from_json_number(json_null_to_nil(raw.bookCount)),
+    }
+end
+
+--- GET an app API list and convert each entry with `parse`.
+---@return boolean ok
+---@return table | string result Parsed entries, or the error
+function GrimmoryAPI:getAppList(path, parse)
+    local ok, code, body = self:request("GET", path)
+
+    if not ok or type(body) ~= "table" then
+        logger:err("Could not load", path, code, body)
+        return false, ok and "Unexpected response" or body
+    end
+
+    local items = {}
+    for _, raw in ipairs(body) do
+        if type(raw) == "table" then
+            table.insert(items, parse(raw))
+        end
+    end
+
+    return true, items
+end
+
+--- GET an app API page and convert each entry with `parse`.
+---@return boolean ok
+---@return LibraryPage | string result
+function GrimmoryAPI:getAppPage(path, params, parse)
+    params.size = params.size or APP_PAGE_SIZE
+
+    local ok, code, body = self:request("GET", path .. build_query(params))
+
+    if not ok or type(body) ~= "table" or type(body.content) ~= "table" then
+        logger:err("Could not load", path, code, body)
+        return false, ok and "Unexpected response" or body
+    end
+
+    local items = {}
+    for _, raw in ipairs(body.content) do
+        if type(raw) == "table" then
+            table.insert(items, parse(raw))
+        end
+    end
+
+    return true, {
+        items = items,
+        page = from_json_number(body.page, params.page or 0),
+        has_next = body.hasNext == true,
+        total = from_json_number(body.totalElements, #items),
+    }
+end
+
+---@return boolean ok
+---@return LibraryCollection[] | string libraries
+function GrimmoryAPI:getAppLibraries()
+    return self:getAppList("/api/v1/app/libraries", parse_app_collection)
+end
+
+---@return boolean ok
+---@return LibraryCollection[] | string shelves
+function GrimmoryAPI:getAppShelves()
+    return self:getAppList("/api/v1/app/shelves", parse_app_collection)
+end
+
+---@return boolean ok
+---@return LibraryCollection[] | string magic_shelves
+function GrimmoryAPI:getAppMagicShelves()
+    return self:getAppList("/api/v1/app/shelves/magic", parse_app_collection)
+end
+
+--- Books, optionally filtered by library, shelf or search text.
+---@param params table page, sort, dir, libraryId, shelfId, search
+---@return boolean ok
+---@return LibraryPage | string page
+function GrimmoryAPI:getAppBooks(params)
+    return self:getAppPage("/api/v1/app/books", params, parse_app_book)
+end
+
+---@return boolean ok
+---@return LibraryPage | string page
+function GrimmoryAPI:getAppMagicShelfBooks(magic_shelf_id, page)
+    return self:getAppPage(
+        "/api/v1/app/shelves/magic/" .. tostring(tonumber(magic_shelf_id)) .. "/books",
+        { page = page },
+        parse_app_book
+    )
+end
+
+---@param params { page: number, search: string|nil, libraryId: number|nil }
+---@return boolean ok
+---@return LibraryPage | string page
+function GrimmoryAPI:getAppSeries(params)
+    params.sort = params.sort or "name"
+    params.dir = params.dir or "asc"
+    return self:getAppPage("/api/v1/app/series", params, parse_app_series)
+end
+
+---@return boolean ok
+---@return LibraryPage | string page
+function GrimmoryAPI:getAppSeriesBooks(series_name, page)
+    if series_name:find("/", 1, true) then
+        -- The server rejects encoded slashes in paths; use the list filter
+        -- (which would split names at commas, hence not the default).
+        return self:getAppBooks({ page = page, series = series_name, sort = "seriesNumber", dir = "asc" })
+    end
+
+    return self:getAppPage(
+        "/api/v1/app/series/" .. socket_url.escape(series_name) .. "/books",
+        { page = page, sort = "seriesNumber", dir = "asc" },
+        parse_app_book
+    )
+end
+
+--- IDs of all books matching a filter (e.g. `{ magicShelfId = 3 }`).
+---@return boolean ok
+---@return number[] | string ids
+function GrimmoryAPI:getAppBookIds(params)
+    local ok, code, body = self:request("GET", "/api/v1/app/books/ids" .. build_query(params))
+
+    if not ok or type(body) ~= "table" then
+        logger:err("Could not load book IDs", code, body)
+        return false, ok and "Unexpected response" or body
+    end
+
+    local ids = {}
+    for _, id in ipairs(body) do
+        table.insert(ids, tonumber(id))
+    end
+
+    return true, ids
+end
+
+--- Book details, including its shelves.
+---@return boolean ok
+---@return table | string detail
+function GrimmoryAPI:getAppBookDetail(book_id)
+    local ok, code, body = self:request("GET", "/api/v1/app/books/" .. tostring(tonumber(book_id)))
+
+    if not ok or type(body) ~= "table" then
+        logger:err("Could not load book", book_id, code, body)
+        return false, ok and "Unexpected response" or body
+    end
+
+    local shelves = {}
+    if type(body.shelves) == "table" then
+        for _, shelf in ipairs(body.shelves) do
+            if type(shelf) == "table" then
+                table.insert(shelves, from_json_number(shelf.id))
+            end
+        end
+    end
+
+    local detail = parse_app_book(body)
+    detail.shelves = shelves
+
+    -- Unlike the list summaries, the details only list the files.  A boolean
+    -- `isPrimary` field is serialized as "primary" by Lombok + Jackson.
+    if not detail.primary_file_name and type(body.files) == "table" then
+        local fallback_file = nil
+
+        for _, file in ipairs(body.files) do
+            if type(file) == "table" and type(file.fileName) == "string" then
+                if file.primary == true or file.isPrimary == true then
+                    detail.primary_file_name = file.fileName
+                    break
+                end
+
+                if fallback_file == nil and (file.book == true or file.isBook == true) then
+                    fallback_file = file.fileName
+                end
+            end
+        end
+
+        detail.primary_file_name = detail.primary_file_name or fallback_file
+    end
+
+    detail.description = from_json_string(json_null_to_nil(body.description))
+    detail.isbn13 = from_json_string(json_null_to_nil(body.isbn13))
+    detail.library_name = from_json_string(json_null_to_nil(body.libraryName))
+
+    return true, detail
+end
+
+--- Download a book's cover thumbnail to `destination_path`.
+function GrimmoryAPI:downloadThumbnail(book_id, destination_path)
+    local destination_file, file_error = io.open(destination_path, "wb")
+    if not destination_file then
+        return false, file_error or "Unknown error opening file"
+    end
+
+    local ok, code, message = self:request(
+        "GET",
+        "/api/v1/media/book/" .. tostring(tonumber(book_id)) .. "/thumbnail",
+        nil,
+        nil,
+        ltn12.sink.file(destination_file)
+    )
+
+    pcall(io.close, destination_file)
+
+    if not ok then
+        os.remove(destination_path)
+        return false, message or ("HTTP Error: " .. tostring(code))
+    end
+
+    return true, destination_path
 end
 
 return GrimmoryAPI

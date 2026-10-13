@@ -391,6 +391,41 @@ function GrimmoryLocalRepository:findBooksByGrimmoryId(grimmory_id)
     return true, books
 end
 
+--- Local paths of all books linked to Grimmory, by Grimmory ID, in one query.
+--- The files are not checked; callers check the ones they show.
+---@return { [string]: string[] } paths
+function GrimmoryLocalRepository:getGrimmoryBookPaths()
+    local ok, paths = with_database(
+        self.database_path,
+        function(conn)
+            local select_stmt = conn:prepare([[
+                SELECT grimmory_id, book_path
+                FROM book
+                WHERE grimmory_id IS NOT NULL
+            ]])
+
+            local paths = {}
+
+            for row in select_stmt:rows() do
+                local key = tostring(tonumber(row[1]))
+                paths[key] = paths[key] or {}
+                table.insert(paths[key], row[2])
+            end
+
+            select_stmt:close()
+
+            return paths
+        end
+    )
+
+    if not ok then
+        logger:err("Failed to read Grimmory books:", paths)
+        return {}
+    end
+
+    return paths
+end
+
 ---@param book_id number
 ---@return boolean ok
 ---@return integer | nil session_id
