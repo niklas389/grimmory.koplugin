@@ -552,9 +552,9 @@ function GrimmorySynchronize:pullBookProgress(book_path)
     end
 end
 
-function GrimmorySynchronize:downloadBook(book_id, download_path)
+function GrimmorySynchronize:downloadBook(book_id, download_path, on_progress, size_kb)
     local success, result, message = pcall(function()
-        return self.api:downloadBook(book_id, download_path)
+        return self.api:downloadBook(book_id, download_path, on_progress, size_kb)
     end)
 
     if not success then
@@ -778,7 +778,7 @@ end
 ---@param book Book
 ---@return string download_path
 ---@return boolean is_downloaded
-function GrimmorySynchronize:pullBook(book)
+function GrimmorySynchronize:pullBook(book, on_download_progress)
     local book_exists = false
     local is_downloaded = false
 
@@ -797,7 +797,7 @@ function GrimmorySynchronize:pullBook(book)
 
             logger:dbg("Downloading book", book.id, "to", download_path)
 
-            local ok, message = self:downloadBook(book.id, download_path)
+            local ok, message = self:downloadBook(book.id, download_path, on_download_progress, book.file_size_kb)
             if ok then
                 logger:info("Book downloaded:", book.id, " - ", download_path)
                 book_exists = true
@@ -816,16 +816,37 @@ function GrimmorySynchronize:pullBook(book)
         -- to associated shelves and pull the book progress.
         self:associateWithShelves(download_path, book.shelves or {})
         self:pullBookProgress(download_path)
+
+        if is_downloaded then
+            self:applyServerProgress(download_path, book.server_progress)
+        end
     end
 
     return download_path, is_downloaded
 end
 
+--- Open a newly downloaded book where it was left on the server, when the
+--- KOReader sync had no position for it (e.g. read in Grimmory's reader).
+---@param server_progress GrimmoryServerProgress | nil
+function GrimmorySynchronize:applyServerProgress(book_path, server_progress)
+    if not server_progress or not self.settings:getSyncReadingProgress() then
+        return
+    end
+
+    if self.doc_metadata:hasPosition(book_path) then
+        return
+    end
+
+    logger:info("Applying server reading progress:", book_path, server_progress.percent, server_progress.page)
+    self.doc_metadata:setProgress(book_path, server_progress.percent, nil, server_progress.page)
+end
+
 --- Download one book chosen in the library browser.  Runs in the sync
 --- subprocess; collections are written so the main process can reload them.
 ---@param grimmory_id number
+---@param on_progress function(bytes: number, total: number|nil) | nil
 ---@return string book_path
-function GrimmorySynchronize:downloadLibraryBook(grimmory_id)
+function GrimmorySynchronize:downloadLibraryBook(grimmory_id, on_progress)
     local download_directory = self.settings:getDownloadDirectory()
     if not download_directory or download_directory == "" then
         error("Download directory is not set")
@@ -856,9 +877,11 @@ function GrimmorySynchronize:downloadLibraryBook(grimmory_id)
             isbn13 = detail.isbn13,
         },
         primary_file = { filename = detail.primary_file_name },
+        server_progress = detail.server_progress,
+        file_size_kb = detail.file_size_kb,
     }
 
-    local book_path = self:pullBook(book)
+    local book_path = self:pullBook(book, on_progress)
     ReadCollection:write()
 
     return book_path
@@ -911,7 +934,7 @@ function GrimmorySynchronize:pullBooks(callback)
         if self:isTargetBook(book) then
             seen_grimmory_ids[tostring(book.id)] = true
 
-            local pull_ok, pull_path_or_message, is_downloaded = pcall(self.pullBook, self, book, callback)
+            local pull_ok, pull_path_or_message, is_downloaded = pcall(self.pullBook, self, book)
             if pull_ok then
                 seen_books[pull_path_or_message] = true
 

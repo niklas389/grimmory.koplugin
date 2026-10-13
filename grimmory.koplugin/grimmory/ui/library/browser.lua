@@ -36,6 +36,7 @@ local util = require("util")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
+local CenterContainer = require("ui/widget/container/centercontainer")
 local Covers = require("grimmory/ui/library/covers")
 local LibraryData = require("grimmory/ui/library/data")
 local Widgets = require("grimmory/ui/library/widgets")
@@ -60,6 +61,8 @@ local TABS = {
 ---@field synchronizer GrimmorySynchronize
 ---@field dialog_manager DialogManager
 ---@field release_wifi function | nil
+---@field connect function(on_ready: function(release: function), on_failed: function(reason: string)) | nil
+---  Connects in the background while the browser is already shown; nil when connected before opening
 ---@field reconnect function(on_ready: function(), on_failed: function(reason: string))
 ---@field is_connected function(): boolean
 ---@field is_sync_running function(): boolean
@@ -102,10 +105,47 @@ function LibraryBrowser:init()
 
     self.tab_screens = {}
     self.stack = {}
+
+    -- Show the browser right away and connect meanwhile
+    self.connected = self.connect == nil
     self:selectTab("home")
+    if not self.connected then
+        self:startConnecting()
+    end
+end
+
+function LibraryBrowser:startConnecting()
+    if self.connecting then
+        return
+    end
+
+    self.connecting = true
+    self.connect_error = nil
+
+    self.connect(
+        function(release)
+            self.connecting = false
+            if self.closed then
+                release()
+                return
+            end
+            self.connected = true
+            self.release_wifi = release
+            self:show()
+        end,
+        function(reason)
+            self.connecting = false
+            if self.closed then
+                return
+            end
+            self.connect_error = reason
+            self:show()
+        end
+    )
 end
 
 function LibraryBrowser:onCloseWidget()
+    self.closed = true
     self:cancelCovers()
 
     if self.release_wifi then
@@ -500,7 +540,7 @@ function LibraryBrowser:headerIcons(screen)
         end))
     end
 
-    if screen.type == "books" or screen.type == "home" then
+    if screen.type == "books" or screen.type == "home" or screen.with_covers then
         local other = self.layout == "grid" and "list" or "grid"
         table.insert(icons, Widgets.fileIconButton(other, function()
             self:setLayout(other)
@@ -551,6 +591,18 @@ function LibraryBrowser:show()
 
     local footer_h = Widgets.footer({ width = self.width, page = 1, pages = 1 }):getSize().h
     local content_h = self.height - parts:getSize().h - (screen.paged and footer_h or 0)
+
+    if not self.connected then
+        if self.connect_error then
+            self:showMessage(screen, content_h, self.connect_error, function()
+                self:startConnecting()
+                self:show()
+            end)
+        else
+            self:showMessage(screen, content_h, _("Connecting…"))
+        end
+        return
+    end
 
     local content
     if screen.type == "home" then
@@ -645,7 +697,7 @@ function LibraryBrowser:pagedContent(screen, content_h)
     local grid
     local size
 
-    if screen.type == "books" then
+    if screen.type == "books" or (screen.with_covers and self.layout == "grid") then
         grid = self:getBookGrid(content_h)
         size = grid.rows * grid.cols
     else
@@ -788,22 +840,40 @@ function LibraryBrowser:entryWidget(screen, entry, grid)
         subtitle = T(_("%1 books"), collection.book_count)
     end
 
+    local cover = (kind == "series" and collection.cover_book_id) and {
+        book_id = collection.cover_book_id,
+        cover_updated_on = collection.cover_updated_on,
+    } or nil
+
+    local function open()
+        self:push(self:collectionBooksScreen(kind, collection))
+    end
+
+    local function toggle()
+        self:toggleDownloadSource(kind, collection)
+    end
+
+    if grid.cols > 1 then
+        return Widgets.collectionGridCell({
+            width = grid.cell_w,
+            height = grid.cell_h,
+            title = collection.name,
+            subtitle = (is_source and "⇩ " or "") .. T(_("%1 books"), collection.book_count or "?"),
+            cover = cover,
+            on_tap = open,
+            on_hold = toggle,
+        })
+    end
+
     return Widgets.collectionRow({
         width = grid.cell_w,
         height = grid.cell_h,
         title = collection.name,
         subtitle = subtitle,
         badge = is_source and _("⇩ Auto") or nil,
-        cover = (kind == "series" and collection.cover_book_id) and {
-            book_id = collection.cover_book_id,
-            cover_updated_on = collection.cover_updated_on,
-        } or nil,
-        on_tap = function()
-            self:push(self:collectionBooksScreen(kind, collection))
-        end,
-        on_hold = function()
-            self:toggleDownloadSource(kind, collection)
-        end,
+        cover = cover,
+        on_tap = open,
+        on_hold = toggle,
     })
 end
 
@@ -1181,32 +1251,29 @@ function LibraryBrowser:detailsContent(screen, content_h)
         add_line(_("✓ On this device"), Widgets.faces.text)
     end
 
-    -- Primary action: one tap to read
-    local primary_text
-    if screen.downloading then
-        primary_text = _("Downloading…")
-    elseif local_path then
-        primary_text = _("Read")
-    else
-        primary_text = _("Download & read")
-    end
-
+    -- Primary action: one tap to read (a progress bar while downloading)
     local button_w = width - 4 * padding
-    local primary = Button:new({
-        text = primary_text,
-        width = button_w,
-        text_font_size = 22,
-        radius = Size.radius.button,
-        bordersize = Size.border.thick,
-        enabled = not screen.downloading and (local_path ~= nil or book.primary_file_name ~= nil),
-        callback = function()
-            if local_path then
-                self:openBook(local_path)
-            else
-                self:downloadBook(screen, true)
-            end
-        end,
-    })
+    local primary
+
+    if screen.downloading then
+        primary = self:downloadProgressWidget(screen, button_w)
+    else
+        primary = Button:new({
+            text = local_path and _("Read") or _("Download & read"),
+            width = button_w,
+            text_font_size = 22,
+            radius = Size.radius.button,
+            bordersize = Size.border.thick,
+            enabled = local_path ~= nil or book.primary_file_name ~= nil,
+            callback = function()
+                if local_path then
+                    self:openBook(local_path)
+                else
+                    self:downloadBook(screen, true)
+                end
+            end,
+        })
+    end
 
     local secondary_buttons = {}
     if local_path then
@@ -1298,6 +1365,69 @@ function LibraryBrowser:detailsContent(screen, content_h)
     })
 end
 
+local function downloadProgressText(bytes, total)
+    if not bytes or bytes <= 0 then
+        return _("Downloading…")
+    end
+    local done = Widgets.formatSize(math.floor(bytes / 1024))
+    if total and total > 0 then
+        return T(_("Downloading… %1 % (%2 of %3)"),
+            math.min(99, math.floor(100 * bytes / total)), done, Widgets.formatSize(math.floor(total / 1024)))
+    end
+    return T(_("Downloading… %1"), done)
+end
+
+--- Progress bar and text shown instead of the "Download & read" button
+function LibraryBrowser:downloadProgressWidget(screen, width)
+    local bar = ProgressWidget:new({
+        width = width,
+        height = Screen:scaleBySize(16),
+        percentage = screen.download_fraction or 0,
+        margin_h = 0,
+        margin_v = 0,
+        radius = Size.radius.button,
+    })
+    local label = TextWidget:new({
+        text = downloadProgressText(screen.download_bytes, screen.download_total),
+        face = Widgets.faces.text,
+        max_width = width,
+    })
+
+    local tracker = Widgets.PaintTracker:new({
+        VerticalGroup:new({
+            align = "center",
+            bar,
+            VerticalSpan:new({ width = Widgets.PADDING }),
+            -- Fixed width, so the refreshed area covers longer texts too
+            CenterContainer:new({
+                dimen = Geom:new({ w = width, h = label:getSize().h }),
+                label,
+            }),
+        }),
+    })
+
+    self.download_widgets = { screen = screen, bar = bar, label = label, tracker = tracker }
+    return tracker
+end
+
+--- Update the progress bar in place (refreshing only its area)
+function LibraryBrowser:updateDownloadProgress(screen)
+    local widgets = self.download_widgets
+    if not widgets or widgets.screen ~= screen or self:current() ~= screen then
+        return
+    end
+
+    widgets.bar:setPercentage(screen.download_fraction or 0)
+    widgets.label:setText(downloadProgressText(screen.download_bytes, screen.download_total))
+
+    local region = widgets.tracker.painted_at
+    if region then
+        UIManager:setDirty(self, function()
+            return "ui", region
+        end)
+    end
+end
+
 function LibraryBrowser:openBook(path)
     self:close()
 
@@ -1317,14 +1447,30 @@ function LibraryBrowser:downloadBook(screen, open_after)
     end
 
     screen.downloading = true
+    screen.download_bytes = nil
+    screen.download_total = book.file_size_kb and book.file_size_kb * 1024 or nil
+    screen.download_fraction = 0
     self:show()
 
     self.executor:background(function(run)
-        local run_ok, ok, result = pcall(run, function()
-            return self.synchronizer:downloadLibraryBook(book.id)
+        local run_ok, ok, result = pcall(run, function(report)
+            return self.synchronizer:downloadLibraryBook(book.id, function(bytes, total)
+                report({ download_bytes = bytes, download_total = total })
+            end)
+        end, function(state)
+            if type(state) ~= "table" or not state.download_bytes then
+                return
+            end
+            screen.download_bytes = state.download_bytes
+            screen.download_total = state.download_total or screen.download_total
+            if screen.download_total and screen.download_total > 0 then
+                screen.download_fraction = math.min(0.99, state.download_bytes / screen.download_total)
+            end
+            self:updateDownloadProgress(screen)
         end)
 
         screen.downloading = false
+        self.download_widgets = nil
 
         if not run_ok or not ok or type(result) ~= "string" then
             local error_result = run_ok and result or ok

@@ -318,6 +318,40 @@ function GrimmoryMenu:getWhenToSyncMenu()
     }
 end
 
+function GrimmoryMenu:getLibraryBrowserMenu()
+    return {
+        {
+            text = _("Show Books as Cover Grid"),
+            checked_func = function()
+                return self.settings:getBrowserLayout() == "grid"
+            end,
+            callback = function()
+                self.settings:setBrowserLayout(self.settings:getBrowserLayout() == "grid" and "list" or "grid")
+            end,
+            keep_menu_open = true,
+            separator = true,
+        },
+        {
+            text = _("Clear Cache"),
+            help_text = _("Remove the cached covers and server answers of the library browser. " ..
+                "They are loaded again when needed."),
+            keep_menu_open = true,
+            callback = function()
+                local Covers = require("grimmory/ui/library/covers")
+                local LibraryData = require("grimmory/ui/library/data")
+
+                LibraryData.clearCache()
+                local files, bytes = Covers.clear()
+
+                self.dialog_manager:notify(
+                    T(_("Library cache cleared: %1 covers, %2 MB"), files, string.format("%.1f", bytes / 1024 / 1024)),
+                    3
+                )
+            end,
+        },
+    }
+end
+
 function GrimmoryMenu:getNetworkMenu()
     local menu = {
         self:toggleItem(_("Turn On WiFi When Needed"), "getSyncEnableWifi", "toggleSyncEnableWifi", {
@@ -405,6 +439,7 @@ function GrimmoryMenu:getTopMenu()
         { text = _("What to Sync"), sub_item_table_func = function() return self:getWhatToSyncMenu() end },
         { text = _("When to Sync"), sub_item_table_func = function() return self:getWhenToSyncMenu() end },
         { text = _("Downloads"), sub_item_table_func = function() return self:getDownloadsMenu() end },
+        { text = _("Library Browser"), sub_item_table_func = function() return self:getLibraryBrowserMenu() end },
         {
             text = _("Network"),
             sub_item_table_func = function() return self:getNetworkMenu() end,

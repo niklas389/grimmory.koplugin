@@ -37,7 +37,9 @@ The Grimmory plugin is under "Tools" (🛠️) for configuration.
   (or hold its entry) to let the sync download its books.
 
 Each page is loaded with exactly the books it shows, and loaded pages are
-kept for 10 minutes (the refresh button reloads).  The browser needs a
+kept for 10 minutes (the refresh button reloads).  A book downloaded here
+opens where it was left on the server, also when it was read in Grimmory's
+own reader.  The browser needs a
 Grimmory version with the app API (`/api/v1/app`).
 
 ## Menu
@@ -47,6 +49,7 @@ Grimmory version with the app API (`/api/v1/app`).
   periodically
 - **Downloads**: download sources (everything, or chosen shelves, libraries,
   magic shelves and series), download folder, deleting removed books
+- **Library Browser**: cover grid or list, clearing the browser's cache
 - **Network**: turning WiFi on when needed
 
 ## Updating

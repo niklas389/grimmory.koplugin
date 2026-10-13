@@ -286,11 +286,36 @@ end
 function Grimmory:onReaderReady()
     logger:dbg("Document open and ready")
 
+    self:applyOpenAtPercent()
+
     if self.settings:getSyncReadingProgress() and self.settings:getSyncProgressOnOpen() then
         self:pullProgressForOpenBook()
     end
 
     self.reading_recorder:onSessionStart()
+end
+
+--- A book downloaded from Grimmory with only a percentage as position (e.g.
+--- read in Grimmory's reader) jumps there once it is open.
+function Grimmory:applyOpenAtPercent()
+    local doc_settings = self.ui and self.ui.doc_settings
+    if not doc_settings then
+        return
+    end
+
+    local percent = tonumber(doc_settings:readSetting(GrimmoryDocMetadata.OPEN_AT_PERCENT))
+    if not percent then
+        return
+    end
+
+    doc_settings:delSetting(GrimmoryDocMetadata.OPEN_AT_PERCENT)
+    logger:info("Opening at the server's reading position:", percent)
+
+    UIManager:nextTick(function()
+        if self.ui and self.ui.document then
+            self.ui:handleEvent(Event:new("GotoPercent", percent))
+        end
+    end)
 end
 
 function Grimmory:onPageUpdate(page)
@@ -460,10 +485,11 @@ function Grimmory:onGrimmoryBrowseLibrary()
         return true
     end
 
-    local function show(release_wifi)
+    local function show(release_wifi, connect)
         local LibraryBrowser = require("grimmory/ui/library/browser")
 
         UIManager:show(LibraryBrowser:new({
+            connect = connect,
             api = self.api,
             settings = self.settings,
             repository = self.repository,
@@ -485,9 +511,19 @@ function Grimmory:onGrimmoryBrowseLibrary()
 
     -- WiFi is kept on while browsing and turned off again on close if the
     -- plugin turned it on.
-    self:withNetwork(show, function(reason)
-        self.dialog_manager:toast(T(_("Cannot open the Grimmory library:\n%1"), reason))
-    end)
+    if self.settings:getSyncEnableWifi() or self:isWifiConnected() then
+        -- Open right away and connect meanwhile (the browser shows
+        -- "Connecting…" and loads once connected)
+        show(nil, function(on_ready, on_failed)
+            self:withNetwork(on_ready, on_failed, true)
+        end)
+    else
+        -- KOReader asks whether to turn on WiFi first; it does not tell
+        -- when that is declined, so the browser opens afterwards.
+        self:withNetwork(show, function(reason)
+            self.dialog_manager:toast(T(_("Cannot open the Grimmory library:\n%1"), reason))
+        end)
+    end
 
     return true
 end
@@ -497,12 +533,13 @@ end
 --- on (and later off again) by the plugin, otherwise KOReader asks.
 ---@param on_ready function(release: function)
 ---@param on_failed function(reason: string) | nil
-function Grimmory:withNetwork(on_ready, on_failed)
+---@param silent boolean | nil No "connecting…" notification (the caller shows its own)
+function Grimmory:withNetwork(on_ready, on_failed, silent)
     on_failed = on_failed or function() end
 
     if self.settings:getSyncEnableWifi() then
         local close_notification
-        if not self:isWifiConnected() then
+        if not silent and not self:isWifiConnected() then
             close_notification = self.dialog_manager:notify(_("Grimmory: connecting…"))
         end
 

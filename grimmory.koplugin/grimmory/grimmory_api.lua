@@ -3,6 +3,7 @@ local http = require("socket.http")
 local https = require("ssl.https")
 local json = require("json")
 local ltn12 = require("ltn12")
+local socket = require("socket")
 local socket_url = require("socket.url")
 
 local PluginMetadata = require("grimmory/plugin_metadata")
@@ -120,6 +121,7 @@ end
 ---@field added_on number
 ---@field library_id number | nil
 ---@field series_name string | nil
+---@field server_progress GrimmoryServerProgress | nil
 ---@field shelves number[]
 ---@field metadata BookMetadata
 ---@field primary_file BookFile | nil
@@ -135,6 +137,79 @@ end
 ---@field chapter string
 ---@field color string
 ---@field style string
+
+--- Reading progress in percent (0 - 100).
+---
+--- Grimmory stores KOReader progress as a fraction (0 - 1) but its own
+--- reader's, PDF and comic progress in percent (0 - 100), and the app API's
+--- `readProgress` returns whichever exists first.  A finished book synced
+--- from KOReader thus arrives as 1.0.  Values up to 1 are taken as fractions
+--- (a book read less than 1 % in Grimmory's own reader would show too much).
+---@param value any
+---@param read_status string | nil
+---@return number | nil percent
+local function normalize_progress(value, read_status)
+    if read_status == "READ" then
+        return 100
+    end
+
+    value = tonumber(value)
+    if value == nil or value <= 0 then
+        return nil
+    end
+
+    if value <= 1 then
+        value = value * 100
+    end
+
+    return math.min(100, value)
+end
+
+--- Server side reading position of a book, from the progress objects of the
+--- book data (KOReader, Grimmory reader, PDF / comic pages).
+---@class GrimmoryServerProgress
+---@field percent number | nil 0 - 100
+---@field page number | nil For page based formats
+
+---@return GrimmoryServerProgress | nil
+local function parse_server_progress(raw, read_status, fallback_percent)
+    local percent
+    local page = nil
+
+    local koreader = type(raw.koreaderProgress) == "table" and raw.koreaderProgress or nil
+    local epub = type(raw.epubProgress) == "table" and raw.epubProgress or nil
+    local pdf = type(raw.pdfProgress) == "table" and raw.pdfProgress or nil
+    local cbx = type(raw.cbxProgress) == "table" and raw.cbxProgress or nil
+
+    if koreader and tonumber(koreader.percentage) then
+        -- Always a fraction
+        percent = tonumber(koreader.percentage) * 100
+    elseif epub and tonumber(epub.percentage) then
+        percent = tonumber(epub.percentage)
+    elseif pdf and tonumber(pdf.percentage) then
+        percent = tonumber(pdf.percentage)
+    elseif cbx and tonumber(cbx.percentage) then
+        percent = tonumber(cbx.percentage)
+    else
+        percent = fallback_percent
+    end
+
+    if pdf and tonumber(pdf.page) then
+        page = tonumber(pdf.page)
+    elseif cbx and tonumber(cbx.page) then
+        page = tonumber(cbx.page)
+    end
+
+    if read_status == "READ" then
+        percent = 100
+    end
+
+    if not percent and not page then
+        return nil
+    end
+
+    return { percent = percent and math.min(100, math.max(0, percent)) or nil, page = page }
+end
 
 local function parse_book(book)
     local shelves = {}
@@ -170,6 +245,7 @@ local function parse_book(book)
         added_on = from_json_iso8601(book["addedOn"]),
         library_id = from_json_number(book["libraryId"]),
         series_name = from_json_string(book_metadata["seriesName"]),
+        server_progress = parse_server_progress(book, from_json_string(book["readStatus"])),
         shelves = shelves,
         metadata = metadata,
         primary_file = primary_file
@@ -538,7 +614,9 @@ function GrimmoryAPI:getBooks()
 
 end
 
-function GrimmoryAPI:downloadBook(book_id, destination_path)
+---@param on_progress function(bytes: number, total: number|nil) | nil Called at most twice a second
+---@param size_kb number | nil Expected size, for the progress
+function GrimmoryAPI:downloadBook(book_id, destination_path, on_progress, size_kb)
     local path = "/api/v1/books/" .. tonumber(book_id) .. "/download"
 
     local destination_file, file_error = io.open(destination_path, "wb")
@@ -547,6 +625,25 @@ function GrimmoryAPI:downloadBook(book_id, destination_path)
     end
 
     local sink = ltn12.sink.file(destination_file)
+
+    if on_progress then
+        local file_sink = sink
+        local bytes = 0
+        local last_report = 0
+        local total = size_kb and size_kb * 1024 or nil
+
+        sink = function(chunk, err)
+            if chunk then
+                bytes = bytes + #chunk
+                local now = socket.gettime()
+                if now - last_report >= 0.5 then
+                    last_report = now
+                    pcall(on_progress, bytes, total)
+                end
+            end
+            return file_sink(chunk, err)
+        end
+    end
 
     local ok, code, message = self:request("GET", path, nil, nil, sink)
 
@@ -959,7 +1056,8 @@ end
 
 ---@return LibraryBook
 local function parse_app_book(raw)
-    local progress = from_json_number(json_null_to_nil(raw.readProgress))
+    local read_status = from_json_string(json_null_to_nil(raw.readStatus))
+    local progress = normalize_progress(json_null_to_nil(raw.readProgress), read_status)
 
     return {
         id = from_json_number(raw.id),
@@ -968,7 +1066,7 @@ local function parse_app_book(raw)
         series_name = from_json_string(json_null_to_nil(raw.seriesName)),
         series_number = from_json_number(json_null_to_nil(raw.seriesNumber)),
         library_id = from_json_number(json_null_to_nil(raw.libraryId)),
-        read_status = from_json_string(json_null_to_nil(raw.readStatus)),
+        read_status = read_status,
         read_progress = progress,
         primary_file_name = from_json_string(json_null_to_nil(raw.primaryFileName)),
         primary_file_type = from_json_string(json_null_to_nil(raw.primaryFileType)),
@@ -1051,10 +1149,23 @@ function GrimmoryAPI:getAppPage(path, params, parse)
     }
 end
 
+GrimmoryAPI.normalizeProgress = normalize_progress
+GrimmoryAPI.parseServerProgress = parse_server_progress
+
 ---@return boolean ok
 ---@return LibraryCollection[] | string libraries
 function GrimmoryAPI:getAppLibraries()
-    return self:getAppList("/api/v1/app/libraries", parse_app_collection)
+    local ok, libraries = self:getAppList("/api/v1/app/libraries", parse_app_collection)
+    if ok then
+        return ok, libraries
+    end
+
+    -- The app endpoint fails on current servers ("An unexpected error
+    -- occurred": it reads the libraries' folders outside of a database
+    -- transaction).  The web UI's list has the same libraries, without
+    -- book counts.
+    logger:warn("App libraries failed, using the web UI's list:", libraries)
+    return self:getAppList("/api/v1/libraries", parse_app_collection)
 end
 
 ---@return boolean ok
@@ -1200,6 +1311,7 @@ function GrimmoryAPI:getAppBookDetail(book_id)
             if type(file) == "table" and type(file.fileName) == "string" then
                 if file.primary == true or file.isPrimary == true then
                     detail.primary_file_name = file.fileName
+                    detail.file_size_kb = detail.file_size_kb or from_json_number(json_null_to_nil(file.fileSizeKb))
                     break
                 end
 
@@ -1212,6 +1324,7 @@ function GrimmoryAPI:getAppBookDetail(book_id)
         detail.primary_file_name = detail.primary_file_name or fallback_file
     end
 
+    detail.server_progress = parse_server_progress(body, detail.read_status, detail.read_progress)
     detail.description = from_json_string(json_null_to_nil(body.description))
     detail.isbn13 = from_json_string(json_null_to_nil(body.isbn13))
     detail.library_name = from_json_string(json_null_to_nil(body.libraryName))
