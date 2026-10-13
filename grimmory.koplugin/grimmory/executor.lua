@@ -67,12 +67,20 @@ local function writeObjectToFD(fd, obj)
     return true, nil
 end
 
+-- Why connecting failed, returned as the result of a failed run.
+local ERROR_WIFI_FAILED = "wifi-failed"
+local ERROR_NO_CONNECTION = "no-connection"
+
 ---@class GrimmoryExecutor
 ---@field private running_subprocesses any[]
-local GrimmoryExecutor = {}
+---@field settings GrimmorySettings|nil
+local GrimmoryExecutor = {
+    ERROR_WIFI_FAILED = ERROR_WIFI_FAILED,
+    ERROR_NO_CONNECTION = ERROR_NO_CONNECTION,
+}
 
-function GrimmoryExecutor:new()
-    local o = {}
+function GrimmoryExecutor:new(o)
+    o = o or {}
     setmetatable(o, self)
     self.__index = self
     o:init()
@@ -128,6 +136,43 @@ local WIFI_BACKGROUND_CONNECT_TIMEOUT = 30
 local wifi_users = 0
 local wifi_enabled_by_us = false
 
+-- PocketBook's system network tool.  Unlike inkview's NetConnect (used by
+-- KOReader), it can run in the background.  Not documented by PocketBook and
+-- reported to behave differently between models, hence opt-in.
+local POCKETBOOK_NETAGENT = "/ebrmain/bin/netagent"
+
+local function file_exists(path)
+    local file = io.open(path, "r")
+    if file then
+        file:close()
+        return true
+    end
+    return false
+end
+
+local function start_pocketbook_background_connect()
+    -- The subshell with `&` returns at once; netagent connects meanwhile.
+    os.execute(
+        "(" .. POCKETBOOK_NETAGENT .. " net on; " .. POCKETBOOK_NETAGENT .. " connect)" ..
+        " >/dev/null 2>&1 &"
+    )
+end
+
+---@param use_pocketbook_netagent boolean
+---@return function|nil start Starts connecting without blocking the UI
+local function get_background_connect(use_pocketbook_netagent)
+    if Device:hasWifiRestore() then
+        -- Same as KOReader restoring WiFi after resume (Kobo, Kindle, ...)
+        return function() NetworkManager:restoreWifiAsync() end
+    end
+
+    if use_pocketbook_netagent and Device:isPocketBook() and file_exists(POCKETBOOK_NETAGENT) then
+        return start_pocketbook_background_connect
+    end
+
+    return nil
+end
+
 local function is_wifi_connected()
     return NetworkManager:isWifiOn() and NetworkManager:isConnected()
 end
@@ -172,9 +217,21 @@ local function wait_until(is_done, timeout)
     return result == true
 end
 
+local function connection_failure()
+    -- WiFi is on, but there is no connection (e.g. network out of range).
+    -- On PocketBook "on" already means associated, so this is a missing route.
+    if NetworkManager:isWifiOn() then
+        return false, ERROR_NO_CONNECTION
+    end
+
+    return false, ERROR_WIFI_FAILED
+end
+
 --- Connect to WiFi, turning it on if needed.  Must run inside a coroutine.
+---@param use_pocketbook_netagent boolean
 ---@return boolean connected
-local function connect_wifi()
+---@return string|nil error ERROR_WIFI_FAILED or ERROR_NO_CONNECTION
+local function connect_wifi(use_pocketbook_netagent)
     if is_wifi_connected() then
         logger:dbg("WiFi is already Active")
         return true
@@ -182,7 +239,10 @@ local function connect_wifi()
 
     if not Device:hasWifiToggle() then
         logger:err("Requested with wifi but cannot enable")
-        return NetworkManager:isConnected()
+        if NetworkManager:isConnected() then
+            return true
+        end
+        return false, ERROR_NO_CONNECTION
     end
 
     if is_wifi_connecting() then
@@ -194,7 +254,7 @@ local function connect_wifi()
 
         if is_wifi_connecting() then
             logger:err("Ongoing WiFi connection attempt did not finish")
-            return false
+            return connection_failure()
         end
     end
 
@@ -203,17 +263,18 @@ local function connect_wifi()
         wifi_enabled_by_us = true
     end
 
-    if Device:hasWifiRestore() then
-        -- Connect in the background, like KOReader does when restoring WiFi
-        -- after resume.  `enableWifi` scans for networks and waits for the
-        -- association on the UI thread, which freezes the reader for several
-        -- seconds when a book is opened or closed.
+    local background_connect = get_background_connect(use_pocketbook_netagent)
+
+    if background_connect then
+        -- Connect in the background.  `enableWifi` scans for networks (Kobo)
+        -- or calls NetConnect (PocketBook) on the UI thread, which freezes the
+        -- reader for several seconds when a book is opened or closed.
         logger:dbg("Connecting to WiFi in the background")
 
         NetworkManager.pending_connection = true
         UIManager:broadcastEvent(Event:new("NetworkConnecting"))
 
-        local restore_ok, restore_error = pcall(NetworkManager.restoreWifiAsync, NetworkManager)
+        local restore_ok, restore_error = pcall(background_connect)
         if not restore_ok then
             logger:err("Background WiFi connection failed to start:", restore_error)
         end
@@ -227,7 +288,8 @@ local function connect_wifi()
             return true
         end
 
-        -- e.g. the network is only known to KOReader, not to the system.
+        -- e.g. the network is only known to KOReader, not to the system, or
+        -- netagent does not work on this PocketBook model.
         logger:warn("Background WiFi connection failed, trying a regular connection")
     end
 
@@ -277,7 +339,7 @@ local function connect_wifi()
         end
     end
 
-    return false
+    return connection_failure()
 end
 
 local function release_wifi()
@@ -340,10 +402,15 @@ function GrimmoryExecutor:background(callback, with_wifi)
                 wifi_users = wifi_users + 1
                 uses_wifi = true
 
-                if not connect_wifi() then
-                    logger:err("No connectivity after trying to enable WiFi")
+                local use_pocketbook_netagent = self.settings ~= nil and
+                    self.settings:getSyncPocketBookBackgroundWifi()
+
+                local connected, connect_error = connect_wifi(use_pocketbook_netagent)
+
+                if not connected then
+                    logger:err("No connectivity after trying to enable WiFi:", connect_error)
                     finish()
-                    return false, "No connectivity"
+                    return false, connect_error
                 end
             end
 

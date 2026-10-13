@@ -28,6 +28,7 @@ local logger = GrimmoryLogger:new()
 ---@field sync_on_suspend boolean
 ---@field sync_on_power_off boolean
 ---@field sync_enable_wifi boolean
+---@field sync_pocketbook_background_wifi boolean
 ---@field sync_progress_on_open boolean
 ---@field sync_progress_on_resume boolean
 ---@field sync_periodically boolean
@@ -57,6 +58,7 @@ local DEFAULTS = {
     sync_on_suspend = false,
     sync_on_power_off = false,
     sync_enable_wifi = false,
+    sync_pocketbook_background_wifi = false,
     sync_progress_on_open = true,
     sync_progress_on_resume = false,
     sync_periodically = false,
@@ -413,6 +415,19 @@ end
 
 function GrimmorySettings:toggleSyncEnableWifi()
     self.data.sync_enable_wifi = not self:getSyncEnableWifi()
+    self:write()
+end
+
+function GrimmorySettings:getSyncPocketBookBackgroundWifi()
+    if self.data.sync_pocketbook_background_wifi == nil then
+        return DEFAULTS.sync_pocketbook_background_wifi
+    end
+
+    return self.data.sync_pocketbook_background_wifi
+end
+
+function GrimmorySettings:toggleSyncPocketBookBackgroundWifi()
+    self.data.sync_pocketbook_background_wifi = not self:getSyncPocketBookBackgroundWifi()
     self:write()
 end
 

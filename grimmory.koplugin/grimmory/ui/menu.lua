@@ -74,7 +74,7 @@ function GrimmoryMenu:getAboutMenu()
 end
 
 function GrimmoryMenu:getAutomaticSyncOptionsMenu()
-    return {
+    local menu = {
         {
             text = _("Check Progress on Open Document"),
             enabled_func = function()
@@ -171,6 +171,30 @@ function GrimmoryMenu:getAutomaticSyncOptionsMenu()
             end,
         },
     }
+
+    if Device:isPocketBook() then
+        table.insert(menu, {
+            text = _("Connect WiFi in Background (experimental)"),
+            help_text = _(
+                "Turn on WiFi with PocketBook's system network tool instead of KOReader's " ..
+                "connection, so reading is not interrupted while connecting.\n\n" ..
+                "If the background connection does not work on this device, the regular " ..
+                "(blocking) connection is used after 30 seconds."
+            ),
+            enabled_func = function()
+                return self.settings:getSyncEnableWifi()
+            end,
+            checked_func = function()
+                return self.settings:getSyncPocketBookBackgroundWifi()
+            end,
+            callback = function()
+                self.settings:toggleSyncPocketBookBackgroundWifi()
+                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
+            end,
+        })
+    end
+
+    return menu
 end
 
 function GrimmoryMenu:getSyncOptionsMenu()

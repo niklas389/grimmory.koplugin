@@ -976,6 +976,7 @@ function GrimmorySynchronize:synchronizeAll(callback)
 end
 
 --- Push only the local reading progress and sessions of one book.
+--- Sessions need the book to be known to Grimmory; it is linked if needed.
 --- Used when a document is closed: no annotations, shelves, downloads or
 --- remote progress pulls, so it finishes quickly.
 ---@param book_path string
@@ -985,14 +986,33 @@ function GrimmorySynchronize:synchronizeBookProgress(book_path, callback)
         error("Cannot connect to valid server")
     end
 
-    local book_ok, book_id = self.repository:upsertBook(book_path)
+    local book_ok, book_id, grimmory_id = self.repository:upsertBook(book_path)
 
     if not book_ok or not book_id then
         error("Could not track book")
     end
 
     logger:info("Pushing reading progress:", book_path)
-    self:pushBookMetadata(book_id, callback)
+    self:pushBookProgress(book_id, callback)
+
+    if not self.settings:getSyncReadingSessions() then
+        return
+    end
+
+    if grimmory_id == nil then
+        -- Sessions are recorded against the Grimmory book, so link it once
+        -- (the association is stored, later closes skip this search).
+        logger:info("Searching Grimmory for book:", book_path)
+        grimmory_id = self:associateBook(book_path)
+    end
+
+    if grimmory_id == nil then
+        -- Not a Grimmory book: nothing to record the sessions against.
+        logger:info("Book not found in Grimmory, not pushing sessions:", book_path)
+        return
+    end
+
+    self:pushBookSessions(book_id, callback)
 
     logger:info("Done pushing reading progress:", book_path)
 end
