@@ -33,6 +33,25 @@ local GrimmoryReadingProgressManager = require("grimmory/reading/progress_manage
 
 local logger = GrimmoryLogger:new()
 
+--- Short, user facing reason for a failed sync / progress check.
+---@param result any The error returned by the executor or the sync
+---@return string|nil reason
+local function describeSyncError(result)
+    if result == GrimmoryExecutor.ERROR_WIFI_FAILED then
+        return _("WiFi didn't turn on")
+    elseif result == GrimmoryExecutor.ERROR_NO_CONNECTION then
+        return _("No network connection")
+    elseif type(result) ~= "string" then
+        return nil
+    elseif result:find("Cannot connect to valid server", 1, true) then
+        return _("Grimmory server not reachable")
+    elseif result:find("Could not track book", 1, true) then
+        return _("Book could not be read")
+    end
+
+    return nil
+end
+
 -- KOReader instantiates the plugin separately for the FileManager and for
 -- every ReaderUI.  Track synchronization at module level so two instances
 -- can never run a sync at the same time against the same database.
@@ -145,7 +164,9 @@ function Grimmory:init()
         reading_annotations = self.reading_annotations,
     })
 
-    self.executor = GrimmoryExecutor:new()
+    self.executor = GrimmoryExecutor:new({
+        settings = self.settings,
+    })
 
     self:onGrimmorySettingsChanged()
 
@@ -399,8 +420,15 @@ function Grimmory:pullProgressForOpenBook()
             pcall(close_notification)
 
             if not run_ok or not ok then
-                logger:err("Could not check reading progress", run_ok and latest_progress or ok)
-                self.dialog_manager:notify(_("Grimmory: could not check reading progress"), 3)
+                local error_result = run_ok and latest_progress or ok
+                logger:err("Could not check reading progress", error_result)
+
+                local reason = describeSyncError(error_result)
+                if reason then
+                    self.dialog_manager:notify(T(_("Grimmory: could not check reading progress: %1"), reason), 3)
+                else
+                    self.dialog_manager:notify(_("Grimmory: could not check reading progress"), 3)
+                end
                 return
             end
 
@@ -504,8 +532,27 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
     -- Tell everything to flush so we have data available for our sync
     UIManager:broadcastEvent(Event:new("FlushSettings"))
 
+    local function notifyFailure(reason)
+        if verbose then
+            if reason then
+                self.dialog_manager:toast(T(_("Failed to Synchronize with Grimmory\n%1"), reason))
+            else
+                self.dialog_manager:toast(_("Failed to Synchronize with Grimmory"))
+            end
+        elseif options.notify then
+            if reason then
+                self.dialog_manager:notify(T(_("Grimmory sync failed: %1"), reason), 4)
+            else
+                self.dialog_manager:notify(_("Grimmory sync failed"), 4)
+            end
+        end
+    end
+
     local function background_callback(run, terminate)
         if not self:isReadyToSync() then
+            if options.notify and (self.is_synchronizing or sync_in_progress) then
+                self.dialog_manager:notify(_("Grimmory: another sync is running, skipped"), 3)
+            end
             return
         end
 
@@ -517,11 +564,7 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
         -- itself, so this pre-check must not abort the sync early.
         if not enable_wifi and not self:isWifiConnected() then
             logger:err("Cannot sync without connectivity")
-            if verbose then
-                self.dialog_manager:toast(
-                    _("Failed to Synchronize with Grimmory: No Connectivity")
-                )
-            end
+            notifyFailure(_("No network connection"))
             return
         end
 
@@ -681,14 +724,7 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
                 end
             else
                 logger:err("Failed sync", result)
-
-                if verbose then
-                    self.dialog_manager:toast(
-                        _("Failed to Synchronize with Grimmory")
-                    )
-                elseif options.notify then
-                    self.dialog_manager:notify(_("Grimmory: synchronization failed"), 3)
-                end
+                notifyFailure(describeSyncError(result))
             end
 
             return
@@ -697,14 +733,12 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
         if options.progress_only then
             -- Nothing on the device changed, so there is nothing to refresh.
             -- Reloading here would also reopen the document being closed.
-            if progress_error_count > 0 or session_error_count > 0 then
+            if progress_error_count > 0 then
                 logger:err("Failed pushing reading progress for:", book_path)
-
-                if verbose then
-                    self.dialog_manager:toast(_("Failed to Synchronize with Grimmory"))
-                elseif options.notify then
-                    self.dialog_manager:notify(_("Grimmory: synchronization failed"), 3)
-                end
+                notifyFailure(_("Server did not accept reading progress"))
+            elseif session_error_count > 0 then
+                logger:err("Failed pushing reading sessions for:", book_path)
+                notifyFailure(_("Server did not accept reading sessions"))
             end
 
             return

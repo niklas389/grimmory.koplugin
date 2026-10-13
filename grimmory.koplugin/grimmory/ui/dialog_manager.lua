@@ -10,10 +10,20 @@ local Notification = require("ui/widget/notification")
 local UIManager = require("ui/uimanager")
 local PathChooser = require("ui/widget/pathchooser")
 local ProgressbarDialog = require("ui/widget/progressbardialog")
+local Size = require("ui/size")
 
 local GrimmoryLogger = require("grimmory/logger")
 
 local logger = GrimmoryLogger:new()
+
+-- KOReader's Notification has square corners; give it the rounded corners
+-- of InfoMessage and the other dialogs.
+local RoundedNotification = Notification:extend{}
+
+function RoundedNotification:init()
+    Notification.init(self)
+    self.frame.radius = Size.radius.window
+end
 
 ---@param value any
 ---@param fallback number
@@ -72,7 +82,7 @@ end
 ---@param timeout number | nil Seconds until it closes; `nil` keeps it until closed
 ---@return function close
 function DialogManager:notify(text, timeout)
-    local notification = Notification:new({
+    local notification = RoundedNotification:new({
         text = text,
         timeout = timeout,
     })
