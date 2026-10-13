@@ -38,6 +38,10 @@ local logger = GrimmoryLogger:new()
 ---@field sync_progress_on_open boolean
 ---@field sync_progress_on_resume boolean
 ---@field browser_layout "list" | "grid"
+---@field smart_download_mode "off" | "in_progress" | "chosen"
+---@field smart_download_series { [string]: boolean } Per series: true = chosen, false = excluded
+---@field smart_ahead_books number Unread book volumes kept on the device ahead
+---@field smart_ahead_comics number Unread comic / manga volumes kept on the device ahead
 ---@field sync_periodically boolean
 ---@field sync_frequency number
 ---@field sync_shelves boolean
@@ -74,6 +78,10 @@ local DEFAULTS = {
     sync_progress_on_open = true,
     sync_progress_on_resume = false,
     browser_layout = "list",
+    smart_download_mode = "off",
+    smart_download_series = {},
+    smart_ahead_books = 1,
+    smart_ahead_comics = 3,
     sync_periodically = false,
     sync_frequency = 120,
     sync_shelves = true,
@@ -388,13 +396,16 @@ end
 
 ---@param grimmory_id number
 ---@param kept boolean
-function GrimmorySettings:setKeptBook(grimmory_id, kept)
+---@param in_memory_only boolean | nil Do not write the settings file (in the sync subprocess)
+function GrimmorySettings:setKeptBook(grimmory_id, kept, in_memory_only)
     if type(self.data.browser_kept_books) ~= "table" then
         self.data.browser_kept_books = {}
     end
 
     self.data.browser_kept_books[tostring(grimmory_id)] = kept or nil
-    self:write()
+    if not in_memory_only then
+        self:write()
+    end
 end
 
 function GrimmorySettings:getSyncReadingProgress()
@@ -546,6 +557,86 @@ end
 
 function GrimmorySettings:toggleSyncPocketBookBackgroundWifi()
     self.data.sync_pocketbook_background_wifi = not self:getSyncPocketBookBackgroundWifi()
+    self:write()
+end
+
+--- Smart download: keep the next volumes of series on the device
+---@return "off" | "in_progress" | "chosen"
+function GrimmorySettings:getSmartDownloadMode()
+    local mode = self.data.smart_download_mode
+    if mode == "in_progress" or mode == "chosen" then
+        return mode
+    end
+    return "off"
+end
+
+---@param mode "off" | "in_progress" | "chosen"
+function GrimmorySettings:setSmartDownloadMode(mode)
+    self.data.smart_download_mode = mode
+    self:write()
+end
+
+--- The explicit choice for a series: true (chosen), false (excluded) or nil
+function GrimmorySettings:getSmartDownloadSeries(series_name)
+    local series = self.data.smart_download_series
+    if type(series) ~= "table" then
+        return nil
+    end
+    return series[series_name]
+end
+
+---@param enabled boolean | nil
+function GrimmorySettings:setSmartDownloadSeries(series_name, enabled)
+    if type(self.data.smart_download_series) ~= "table" then
+        self.data.smart_download_series = {}
+    end
+    self.data.smart_download_series[series_name] = enabled
+    self:write()
+end
+
+--- Series chosen explicitly (downloaded even when not being read)
+---@return string[]
+function GrimmorySettings:getChosenSmartDownloadSeries()
+    local names = {}
+    for name, enabled in pairs(self.data.smart_download_series or {}) do
+        if enabled == true then
+            table.insert(names, name)
+        end
+    end
+    table.sort(names)
+    return names
+end
+
+--- Whether smart download handles a series
+---@param in_progress boolean A volume of it is being read
+function GrimmorySettings:isSmartDownloadSeries(series_name, in_progress)
+    local mode = self:getSmartDownloadMode()
+    local choice = self:getSmartDownloadSeries(series_name)
+
+    if mode == "in_progress" then
+        return choice ~= false and (in_progress or choice == true)
+    elseif mode == "chosen" then
+        return choice == true
+    end
+
+    return false
+end
+
+function GrimmorySettings:getSmartAheadBooks()
+    return tonumber(self.data.smart_ahead_books) or DEFAULTS.smart_ahead_books
+end
+
+function GrimmorySettings:setSmartAheadBooks(count)
+    self.data.smart_ahead_books = math.max(0, math.floor(count))
+    self:write()
+end
+
+function GrimmorySettings:getSmartAheadComics()
+    return tonumber(self.data.smart_ahead_comics) or DEFAULTS.smart_ahead_comics
+end
+
+function GrimmorySettings:setSmartAheadComics(count)
+    self.data.smart_ahead_comics = math.max(0, math.floor(count))
     self:write()
 end
 

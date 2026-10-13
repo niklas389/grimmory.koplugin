@@ -249,6 +249,85 @@ function GrimmoryMenu:getDownloadSourcesMenu()
     }
 end
 
+--- Keep the next volumes of series on the device
+function GrimmoryMenu:getSmartDownloadMenu()
+    local function mode_item(mode, text, help)
+        return {
+            text = text,
+            help_text = help,
+            radio = true,
+            checked_func = function()
+                return self.settings:getSmartDownloadMode() == mode
+            end,
+            callback = function()
+                self.settings:setSmartDownloadMode(mode)
+                settingsChanged()
+            end,
+            keep_menu_open = true,
+        }
+    end
+
+    local function enabled()
+        return self.settings:getSmartDownloadMode() ~= "off"
+    end
+
+    local off_item = mode_item("off", _("Off"))
+    local in_progress_item = mode_item("in_progress", _("Series Being Read"),
+        _("Every series with a volume being read. Series can be excluded in the library browser."))
+    local chosen_item = mode_item("chosen", _("Only Chosen Series"),
+        _("Only series ticked for smart download in the library browser."))
+    chosen_item.separator = true
+
+    return {
+        off_item,
+        in_progress_item,
+        chosen_item,
+        {
+            text_func = function()
+                return T(_("Books Ahead: %1"), self.settings:getSmartAheadBooks())
+            end,
+            enabled_func = enabled,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self.dialog_manager:showNumberSetting(
+                    _("Books Ahead"),
+                    _("Unread book volumes to keep on the device after the one being read"),
+                    self.settings:getSmartAheadBooks(),
+                    0,
+                    function(count)
+                        self.settings:setSmartAheadBooks(count)
+                        if touchmenu_instance then
+                            touchmenu_instance:updateItems()
+                        end
+                    end
+                )
+            end,
+        },
+        {
+            text_func = function()
+                return T(_("Comics / Manga Ahead: %1"), self.settings:getSmartAheadComics())
+            end,
+            help_text = _("Comic and manga volumes are CBZ, CBR and CB7 files."),
+            enabled_func = enabled,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self.dialog_manager:showNumberSetting(
+                    _("Comics / Manga Ahead"),
+                    _("Unread comic volumes to keep on the device after the one being read"),
+                    self.settings:getSmartAheadComics(),
+                    0,
+                    function(count)
+                        self.settings:setSmartAheadComics(count)
+                        if touchmenu_instance then
+                            touchmenu_instance:updateItems()
+                        end
+                    end
+                )
+            end,
+        },
+    }
+end
+
 function GrimmoryMenu:getDownloadsMenu()
     return {
         self:toggleItem(_("Download Books with Sync"), "getDownloadsBooks", "toggleDownloadsBooks", {
@@ -261,6 +340,20 @@ function GrimmoryMenu:getDownloadsMenu()
             end,
             sub_item_table_func = function()
                 return self:getDownloadSourcesMenu()
+            end,
+        },
+        {
+            text_func = function()
+                local mode = self.settings:getSmartDownloadMode()
+                local state = mode == "in_progress" and _("series being read")
+                    or mode == "chosen" and _("chosen series")
+                    or _("off")
+                return T(_("Smart Download for Series: %1"), state)
+            end,
+            help_text = _("Keep the volume being read and the next volumes of series on the device. " ..
+                "Runs with every sync and after closing a book of a series. Downloaded volumes stay on the device."),
+            sub_item_table_func = function()
+                return self:getSmartDownloadMenu()
             end,
         },
         {

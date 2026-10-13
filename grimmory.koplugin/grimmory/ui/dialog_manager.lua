@@ -173,6 +173,43 @@ function DialogManager:showConnectionSettings()
     dialog:onShowKeyboard()
 end
 
+--- Ask for a whole number (at least `minimum`) and pass it to `on_apply`.
+function DialogManager:showNumberSetting(title, description, value, minimum, on_apply)
+    local dialog
+    dialog = MultiInputDialog:new({
+        title = title,
+        fields = {
+            {
+                text = tostring(value),
+                description = description,
+                input_type = "number",
+            },
+        },
+        buttons = {
+            {
+                {
+                    text = _("Cancel"),
+                    id = "close",
+                    callback = function()
+                        UIManager:close(dialog)
+                    end,
+                },
+                {
+                    text = _("Apply"),
+                    callback = function()
+                        local fields = dialog:getFields()
+                        on_apply(math.floor(parse_number(fields[1], value, minimum)))
+                        UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
+                        UIManager:close(dialog)
+                    end,
+                },
+            },
+        },
+    })
+
+    UIManager:show(dialog)
+end
+
 function DialogManager:showSyncFrequencySettings()
     local dialog
     dialog = MultiInputDialog:new({

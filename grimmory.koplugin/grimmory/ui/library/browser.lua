@@ -587,6 +587,9 @@ function LibraryBrowser:show()
 
     if screen.source then
         table.insert(parts, self:downloadSourceBar(screen.source))
+        if screen.source.kind == "series" and self.settings:getSmartDownloadMode() ~= "off" then
+            table.insert(parts, self:smartDownloadBar(screen.source.collection))
+        end
     end
 
     local footer_h = Widgets.footer({ width = self.width, page = 1, pages = 1 }):getSize().h
@@ -1070,6 +1073,68 @@ function LibraryBrowser:toggleDownloadSource(kind, collection)
     -- The home rows include the download sources
     if self.tab_screens.home then
         self.tab_screens.home.sections = nil
+    end
+
+    self:show()
+end
+
+--- Whether a volume of the series is being read (as the server says; cached)
+function LibraryBrowser:isSeriesInProgress(series_name)
+    local in_progress = false
+
+    -- Answered synchronously unless reconnecting; then the screen is shown
+    -- again anyway once connected, with the answer cached.
+    self.data:fetch("series-in-progress", function()
+        return self.api:getAppSeriesInProgress()
+    end, function(ok, names)
+        if ok then
+            for _, name in ipairs(names) do
+                if name == series_name then
+                    in_progress = true
+                    break
+                end
+            end
+        end
+    end)
+
+    return in_progress
+end
+
+function LibraryBrowser:smartDownloadBar(collection)
+    local in_progress = false
+    if self.settings:getSmartDownloadMode() == "in_progress"
+        and self.settings:getSmartDownloadSeries(collection.name) == nil then
+        in_progress = self:isSeriesInProgress(collection.name)
+    end
+
+    local checked = self.settings:isSmartDownloadSeries(collection.name, in_progress)
+
+    return Widgets.checkboxRow({
+        width = self.width,
+        text = _("Smart download: keep the next volumes"),
+        checked = checked,
+        on_tap = function()
+            self:toggleSmartDownload(collection, checked)
+        end,
+    })
+end
+
+function LibraryBrowser:toggleSmartDownload(collection, checked)
+    local choice
+    if not checked then
+        choice = true
+    elseif self.settings:getSmartDownloadMode() == "in_progress" then
+        -- Excluded even while being read
+        choice = false
+    end
+
+    self.settings:setSmartDownloadSeries(collection.name, choice)
+    UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
+
+    if checked then
+        self.dialog_manager:notify(T(_("Smart download is off for “%1”."), collection.name), 3)
+    else
+        self.dialog_manager:notify(T(_("The next volumes of “%1” are downloaded by the sync."), collection.name), 3)
     end
 
     self:show()

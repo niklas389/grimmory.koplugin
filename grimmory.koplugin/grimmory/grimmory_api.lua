@@ -1239,6 +1239,28 @@ function GrimmoryAPI:getAppSeriesBooks(series_name, page, size)
     )
 end
 
+--- Names of the series with a volume being read (READING or RE_READING)
+---@return boolean ok
+---@return string[] | string names Or the error
+function GrimmoryAPI:getAppSeriesInProgress()
+    local names = {}
+
+    for page = 0, 19 do
+        local ok, result = self:getAppSeries({ page = page, size = 50, status = "in-progress" })
+        if not ok then
+            return false, result
+        end
+        for _, series in ipairs(result.items) do
+            table.insert(names, series.name)
+        end
+        if not result.has_next then
+            break
+        end
+    end
+
+    return true, names
+end
+
 --- Whether an error message means the network is down or unreachable,
 --- as opposed to an error answered by the server.
 ---@param message any
