@@ -19,7 +19,11 @@ end
 ---@class GrimmoryDocMetadata
 ---@field private props_cache any
 ---@field private ui any
-local DocMetadata = {}
+local DocMetadata = {
+    -- Doc setting: percent to jump to when the book is opened (set when the
+    -- position came from the server without an exact location)
+    OPEN_AT_PERCENT = "grimmory_open_at_percent",
+}
 
 function DocMetadata:new(o)
     o = o or {}
@@ -214,6 +218,11 @@ function DocMetadata:setProgress(path, percent, xpointer, page)
 
     if xpointer ~= nil then
         settings:saveSetting("last_xpointer", xpointer)
+    elseif percent ~= nil and page == nil then
+        -- Without an exact position KOReader opens a book at its start (it
+        -- ignores `percent_finished`, and `last_percent` is applied before
+        -- the book is fully laid out).  Jump there once it is open instead.
+        settings:saveSetting(DocMetadata.OPEN_AT_PERCENT, percent)
     end
 
     if page ~= nil then
@@ -221,6 +230,15 @@ function DocMetadata:setProgress(path, percent, xpointer, page)
     end
 
     settings:flush()
+end
+
+--- Whether KOReader knows where the book was left (an exact position)
+function DocMetadata:hasPosition(path)
+    local settings = self:getDocSettings(path)
+
+    return settings:readSetting("last_xpointer") ~= nil
+        or settings:readSetting("last_page") ~= nil
+        or settings:readSetting(DocMetadata.OPEN_AT_PERCENT) ~= nil
 end
 
 function DocMetadata:getAnnotations(path)

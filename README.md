@@ -35,9 +35,13 @@ The Grimmory plugin is under "Tools" (🛠️) for configuration.
 - **Search** books (or series, in the Series tab) with the magnifier.
 - **Download with automatic sync**: tick it inside a shelf, library or series
   (or hold its entry) to let the sync download its books.
+- **Smart download**: tick it inside a series to keep its next volumes on
+  the device (see below).
 
 Each page is loaded with exactly the books it shows, and loaded pages are
-kept for 10 minutes (the refresh button reloads).  The browser needs a
+kept for 10 minutes (the refresh button reloads).  A book downloaded here
+opens where it was left on the server, also when it was read in Grimmory's
+own reader.  The browser needs a
 Grimmory version with the app API (`/api/v1/app`).
 
 ## Menu
@@ -46,8 +50,26 @@ Grimmory version with the app API (`/api/v1/app`).
 - **When to Sync**: opening / closing a book, wake, suspend, power off,
   periodically
 - **Downloads**: download sources (everything, or chosen shelves, libraries,
-  magic shelves and series), download folder, deleting removed books
+  magic shelves and series), smart download for series, download folder,
+  deleting removed books
+- **Library Browser**: cover grid or list, clearing the browser's cache
 - **Network**: turning WiFi on when needed
+
+## Smart download for series
+
+**Downloads** -> **Smart Download for Series** keeps the volume being read
+and the next unread volumes of a series on the device.  With volumes 1–5
+finished and volume 6 being read, it downloads volume 6 and, by default,
+volume 7 (one book ahead) or volumes 7–9 for comics and manga (CBZ, CBR, CB7;
+three ahead).  Both counts can be changed in the menu.
+
+- **Series Being Read**: every series with a volume marked as reading on the
+  server.  Untick "Smart download" in a series to leave it out, or tick it in
+  a series not started yet to start with its first volumes.
+- **Only Chosen Series**: only series ticked in the library browser.
+
+It runs with every sync and after closing a book of a series.  Volumes it
+downloads stay on the device, also when they are not in a download source.
 
 ## Updating
 

@@ -286,11 +286,36 @@ end
 function Grimmory:onReaderReady()
     logger:dbg("Document open and ready")
 
+    self:applyOpenAtPercent()
+
     if self.settings:getSyncReadingProgress() and self.settings:getSyncProgressOnOpen() then
         self:pullProgressForOpenBook()
     end
 
     self.reading_recorder:onSessionStart()
+end
+
+--- A book downloaded from Grimmory with only a percentage as position (e.g.
+--- read in Grimmory's reader) jumps there once it is open.
+function Grimmory:applyOpenAtPercent()
+    local doc_settings = self.ui and self.ui.doc_settings
+    if not doc_settings then
+        return
+    end
+
+    local percent = tonumber(doc_settings:readSetting(GrimmoryDocMetadata.OPEN_AT_PERCENT))
+    if not percent then
+        return
+    end
+
+    doc_settings:delSetting(GrimmoryDocMetadata.OPEN_AT_PERCENT)
+    logger:info("Opening at the server's reading position:", percent)
+
+    UIManager:nextTick(function()
+        if self.ui and self.ui.document then
+            self.ui:handleEvent(Event:new("GotoPercent", percent))
+        end
+    end)
 end
 
 function Grimmory:onPageUpdate(page)
@@ -309,14 +334,22 @@ function Grimmory:onCloseDocument()
 
     self.reading_recorder:onSessionEnd()
 
-    if self.settings:getSyncOnCloseDocument() and self.ui and self.ui.document and self.ui.document.file then
-        -- Only push this book's reading progress; the whole library is
-        -- synchronized by the periodic / manual sync.
+    local close_sync = self.settings:getSyncOnCloseDocument()
+    local smart = self.settings:getSmartDownloadMode() ~= "off"
+
+    if (close_sync or smart) and self.ui and self.ui.document and self.ui.document.file then
+        -- Only push this book's reading progress (the whole library is
+        -- synchronized by the periodic / manual sync), and with smart
+        -- download get the next volumes of its series.
         local book_path = self.ui.document.file
 
         -- Do not block the UI thread
         UIManager:nextTick(function()
-            self:onGrimmorySync(false, book_path, nil, { notify = true, progress_only = true })
+            self:onGrimmorySync(false, book_path, nil, {
+                notify = close_sync,
+                progress_only = true,
+                smart = smart,
+            })
         end)
     end
 end
@@ -460,10 +493,11 @@ function Grimmory:onGrimmoryBrowseLibrary()
         return true
     end
 
-    local function show(release_wifi)
+    local function show(release_wifi, connect)
         local LibraryBrowser = require("grimmory/ui/library/browser")
 
         UIManager:show(LibraryBrowser:new({
+            connect = connect,
             api = self.api,
             settings = self.settings,
             repository = self.repository,
@@ -485,9 +519,19 @@ function Grimmory:onGrimmoryBrowseLibrary()
 
     -- WiFi is kept on while browsing and turned off again on close if the
     -- plugin turned it on.
-    self:withNetwork(show, function(reason)
-        self.dialog_manager:toast(T(_("Cannot open the Grimmory library:\n%1"), reason))
-    end)
+    if self.settings:getSyncEnableWifi() or self:isWifiConnected() then
+        -- Open right away and connect meanwhile (the browser shows
+        -- "Connecting…" and loads once connected)
+        show(nil, function(on_ready, on_failed)
+            self:withNetwork(on_ready, on_failed, true)
+        end)
+    else
+        -- KOReader asks whether to turn on WiFi first; it does not tell
+        -- when that is declined, so the browser opens afterwards.
+        self:withNetwork(show, function(reason)
+            self.dialog_manager:toast(T(_("Cannot open the Grimmory library:\n%1"), reason))
+        end)
+    end
 
     return true
 end
@@ -497,12 +541,13 @@ end
 --- on (and later off again) by the plugin, otherwise KOReader asks.
 ---@param on_ready function(release: function)
 ---@param on_failed function(reason: string) | nil
-function Grimmory:withNetwork(on_ready, on_failed)
+---@param silent boolean | nil No "connecting…" notification (the caller shows its own)
+function Grimmory:withNetwork(on_ready, on_failed, silent)
     on_failed = on_failed or function() end
 
     if self.settings:getSyncEnableWifi() then
         local close_notification
-        if not self:isWifiConnected() then
+        if not silent and not self:isWifiConnected() then
             close_notification = self.dialog_manager:notify(_("Grimmory: connecting…"))
         end
 
@@ -634,10 +679,11 @@ end
 ---@param verbose boolean
 ---@param book_path string|nil Only synchronize this book
 ---@param refresh_book boolean|nil
----@param options { allow_enable_wifi: boolean|nil, notify: boolean|nil, progress_only: boolean|nil }|nil
+---@param options table|nil { allow_enable_wifi, notify, progress_only, smart }
 ---  allow_enable_wifi: set to false to never turn on WiFi for this sync.
 ---  notify: show a non-blocking notification while a non-verbose sync runs.
 ---  progress_only: only push reading progress and sessions of `book_path`.
+---  smart: with progress_only, also smart download the next volumes of its series.
 function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
     options = options or {}
     local enable_wifi = options.allow_enable_wifi ~= false and self.settings:getSyncEnableWifi()
@@ -713,6 +759,7 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
         local book_refresh_count = 0
         local book_error_count = 0
         local progress_error_count = 0
+        local smart_titles = {}
 
         local update_progress_step = function(progress_step)
             if progress_step <= last_progress_step then
@@ -735,7 +782,7 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
             run,
             function(progress_callback)
                 if book_path and options.progress_only then
-                    self.synchronizer:synchronizeBookProgress(book_path, progress_callback)
+                    self.synchronizer:synchronizeBookProgress(book_path, progress_callback, options.smart)
                 elseif book_path then
                     self.synchronizer:synchronizeBook(book_path, refresh_book, progress_callback)
                 else
@@ -785,6 +832,13 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
 
                 if progress.state == "progress-failed" then
                     progress_error_count = progress_error_count + 1
+                end
+
+                if progress.state == "smart-download" then
+                    -- Keep it on the device (the subprocess cannot save that)
+                    self.settings:setKeptBook(progress.book_id, true)
+                    book_download_count = book_download_count + 1
+                    table.insert(smart_titles, progress.title or "")
                 end
 
                 if progress.state == "session-recorded" then
@@ -852,6 +906,19 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
             elseif session_error_count > 0 then
                 logger:err("Failed pushing reading sessions for:", book_path)
                 notifyFailure(_("Server did not accept reading sessions"))
+            end
+
+            if #smart_titles > 0 then
+                -- New volumes arrived: let the file manager show them
+                UIManager:broadcastEvent(Event:new("RefreshContent"))
+                ReadCollection.last_read_time = 0
+                ReadCollection:_read()
+
+                if #smart_titles == 1 then
+                    self.dialog_manager:notify(T(_("Grimmory: downloaded next volume “%1”"), smart_titles[1]), 4)
+                else
+                    self.dialog_manager:notify(T(_("Grimmory: downloaded %1 next volumes"), #smart_titles), 4)
+                end
             end
 
             return

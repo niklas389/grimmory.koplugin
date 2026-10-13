@@ -6,7 +6,9 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local Event = require("ui/event")
 local InfoMessage = require("ui/widget/infomessage")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
-local Notification = require("ui/widget/notification")
+local Font = require("ui/font")
+local RenderText = require("ui/rendertext")
+local Screen = require("device").screen
 local UIManager = require("ui/uimanager")
 local PathChooser = require("ui/widget/pathchooser")
 local ProgressbarDialog = require("ui/widget/progressbardialog")
@@ -14,13 +16,21 @@ local Size = require("ui/size")
 
 
 
--- KOReader's Notification has square corners; give it the rounded corners
--- of InfoMessage and the other dialogs.
-local RoundedNotification = Notification:extend{}
+--- Width of an InfoMessage that just fits `text` (one line per "\n"), the
+--- compact style of SimpleUI's notices, capped at 90 % of the screen.
+local function compactWidth(text)
+    local face = Font:getFace("infofont")
+    local text_w = 0
+    for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+        text_w = math.max(text_w, RenderText:sizeUtf8Text(0, Screen:getWidth(), face, line, true, false).x)
+    end
 
-function RoundedNotification:init()
-    Notification.init(self)
-    self.frame.radius = Size.radius.window
+    -- The info icon at its default size
+    local icon_w = require("ui/widget/iconwidget").width
+    -- Text, icon, the space between them, and some air for the frame's
+    -- padding and border (the width is the content width plus those)
+    local width = text_w + icon_w + Size.span.horizontal_default + 2 * Size.padding.large
+    return math.min(math.floor(Screen:getWidth() * 0.9), math.ceil(width))
 end
 
 ---@param value any
@@ -66,6 +76,7 @@ function DialogManager:toast(text, timeout)
     local info_message = InfoMessage:new({
         text = text,
         timeout = timeout,
+        width = compactWidth(text),
     })
 
     UIManager:show(info_message)
@@ -74,21 +85,23 @@ function DialogManager:toast(text, timeout)
     return function() UIManager:close(info_message) end
 end
 
---- Show a small notification at the top of the screen.  Unlike `toast` it
---- does not block input: any tap or key press closes it and still reaches
---- the reader, so it can stay up while work runs in the background.
+--- Show a notice in SimpleUI's style (a compact, centered message).  It
+--- does not block: a tap closes it and still reaches the screen below, so it
+--- can stay up while work runs in the background.
 ---@param text string
 ---@param timeout number | nil Seconds until it closes; `nil` keeps it until closed
 ---@return function close
 function DialogManager:notify(text, timeout)
-    local notification = RoundedNotification:new({
+    local message = InfoMessage:new({
         text = text,
         timeout = timeout,
+        width = compactWidth(text),
+        toast = true, -- taps are passed on to the widgets below
     })
 
-    UIManager:show(notification)
+    UIManager:show(message)
 
-    return function() UIManager:close(notification) end
+    return function() UIManager:close(message) end
 end
 
 function DialogManager:showConnectionSettings()
@@ -158,6 +171,43 @@ function DialogManager:showConnectionSettings()
 
     UIManager:show(dialog)
     dialog:onShowKeyboard()
+end
+
+--- Ask for a whole number (at least `minimum`) and pass it to `on_apply`.
+function DialogManager:showNumberSetting(title, description, value, minimum, on_apply)
+    local dialog
+    dialog = MultiInputDialog:new({
+        title = title,
+        fields = {
+            {
+                text = tostring(value),
+                description = description,
+                input_type = "number",
+            },
+        },
+        buttons = {
+            {
+                {
+                    text = _("Cancel"),
+                    id = "close",
+                    callback = function()
+                        UIManager:close(dialog)
+                    end,
+                },
+                {
+                    text = _("Apply"),
+                    callback = function()
+                        local fields = dialog:getFields()
+                        on_apply(math.floor(parse_number(fields[1], value, minimum)))
+                        UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
+                        UIManager:close(dialog)
+                    end,
+                },
+            },
+        },
+    })
+
+    UIManager:show(dialog)
 end
 
 function DialogManager:showSyncFrequencySettings()

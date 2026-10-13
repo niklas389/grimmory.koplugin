@@ -48,6 +48,29 @@ function Covers.prune()
     end
 end
 
+--- Delete all cached covers.
+---@return number files
+---@return number bytes
+function Covers.clear()
+    local files, bytes = 0, 0
+
+    if lfs.attributes(COVER_DIRECTORY, "mode") ~= "directory" then
+        return files, bytes
+    end
+
+    for name in lfs.dir(COVER_DIRECTORY) do
+        local path = COVER_DIRECTORY .. "/" .. name
+        if lfs.attributes(path, "mode") == "file" then
+            bytes = bytes + (lfs.attributes(path, "size") or 0)
+            if os.remove(path) then
+                files = files + 1
+            end
+        end
+    end
+
+    return files, bytes
+end
+
 --- Download the given covers in a subprocess, so the browser stays usable
 --- while they load (each one is an HTTPS request).  `on_cover(book_id)` is
 --- called in the UI process as each one arrives.

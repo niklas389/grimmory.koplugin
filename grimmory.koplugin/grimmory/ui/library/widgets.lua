@@ -262,6 +262,22 @@ end
 
 Widgets.CoverSlot = CoverSlot
 
+--- Wraps a widget and remembers where it was painted, to refresh only that
+--- area when it changes (e.g. a download progress bar).
+local PaintTracker = WidgetContainer:extend{}
+
+function PaintTracker:paintTo(bb, x, y)
+    local size = self[1]:getSize()
+    self.painted_at = Geom:new({ x = x, y = y, w = size.w, h = size.h })
+    self[1]:paintTo(bb, x, y)
+end
+
+function PaintTracker:getSize()
+    return self[1]:getSize()
+end
+
+Widgets.PaintTracker = PaintTracker
+
 -------------------------------------------------------------------------------
 -- Books
 -------------------------------------------------------------------------------
@@ -468,6 +484,61 @@ end
 -------------------------------------------------------------------------------
 -- Collections (series, shelves, libraries)
 -------------------------------------------------------------------------------
+
+--- A series (or other collection with a cover) in the grid layout: cover,
+--- name and a small subtitle (book count).
+function Widgets.collectionGridCell(opts)
+    local width, height = opts.width, opts.height
+    local padding = Widgets.PADDING
+    local title_h = Widgets.linesHeight(Widgets.faces.small, 2)
+    local subtitle_h = Widgets.linesHeight(Widgets.faces.small, 1)
+    local cover_w = width - 2 * padding
+    local cover_h = math.min(math.floor(cover_w * 3 / 2), height - title_h - subtitle_h - 3 * padding)
+    cover_w = math.min(cover_w, math.floor(cover_h * 2 / 3))
+
+    local cover = CoverSlot:new({
+        width = cover_w,
+        height = cover_h,
+        book_id = opts.cover and opts.cover.book_id,
+        cover_updated_on = opts.cover and opts.cover.cover_updated_on,
+        title = opts.title,
+    })
+
+    local group = VerticalGroup:new({
+        align = "center",
+        VerticalSpan:new({ width = padding }),
+        cover,
+        VerticalSpan:new({ width = math.floor(padding / 2) }),
+        TextBoxWidget:new({
+            text = opts.title,
+            face = Widgets.faces.small,
+            bold = true,
+            width = width - padding,
+            height = title_h,
+            height_adjust = true,
+            height_overflow_show_ellipsis = true,
+            alignment = "center",
+        }),
+    })
+
+    if opts.subtitle and opts.subtitle ~= "" then
+        table.insert(group, TextWidget:new({
+            text = opts.subtitle,
+            face = Widgets.faces.small,
+            max_width = width - padding,
+            fgcolor = Blitbuffer.COLOR_DARK_GRAY,
+        }))
+    end
+
+    local item = Tappable:new({ width = width, height = height, on_tap = opts.on_tap, on_hold = opts.on_hold })
+    item[1] = TopContainer:new({
+        dimen = Geom:new({ w = width, h = height }),
+        group,
+    })
+    item.cover = cover
+
+    return item
+end
 
 --- A row for a series / shelf / library.  `opts.cover` (book id + update
 --- time) shows a cover on the left, `opts.badge` text is shown on the right.
