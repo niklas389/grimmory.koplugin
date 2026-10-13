@@ -176,6 +176,10 @@ function Grimmory:init()
         settings = self.settings,
     })
 
+    self.dialog_manager.with_network = function(on_ready, on_failed)
+        return self:withNetwork(on_ready, on_failed)
+    end
+
     self:onGrimmorySettingsChanged()
 
     self.ui.menu:registerToMainMenu(self.menu)
@@ -457,7 +461,7 @@ function Grimmory:onGrimmoryBrowseLibrary()
     end
 
     local function show(release_wifi)
-        local LibraryBrowser = require("grimmory/ui/library_browser")
+        local LibraryBrowser = require("grimmory/ui/library/browser")
 
         UIManager:show(LibraryBrowser:new({
             api = self.api,
@@ -467,43 +471,88 @@ function Grimmory:onGrimmoryBrowseLibrary()
             synchronizer = self.synchronizer,
             dialog_manager = self.dialog_manager,
             release_wifi = release_wifi,
+            is_connected = function()
+                return self:isWifiConnected()
+            end,
+            reconnect = function(on_ready, on_failed)
+                self:reconnect(on_ready, on_failed)
+            end,
             is_sync_running = function()
                 return self.is_synchronizing or sync_in_progress
             end,
         }))
     end
 
+    -- WiFi is kept on while browsing and turned off again on close if the
+    -- plugin turned it on.
+    self:withNetwork(show, function(reason)
+        self.dialog_manager:toast(T(_("Cannot open the Grimmory library:\n%1"), reason))
+    end)
+
+    return true
+end
+
+--- Run `on_ready(release)` once the device is online; `release()` ends the
+--- need for the connection.  With "Turn On WiFi When Needed" WiFi is turned
+--- on (and later off again) by the plugin, otherwise KOReader asks.
+---@param on_ready function(release: function)
+---@param on_failed function(reason: string) | nil
+function Grimmory:withNetwork(on_ready, on_failed)
+    on_failed = on_failed or function() end
+
     if self.settings:getSyncEnableWifi() then
-        -- Keep WiFi on while browsing; turned off again on close if the
-        -- plugin turned it on.
         local close_notification
         if not self:isWifiConnected() then
             close_notification = self.dialog_manager:notify(_("Grimmory: connecting…"))
         end
 
         self.executor:holdWifi(
-            function(release_wifi)
+            function(release)
                 if close_notification then
                     pcall(close_notification)
                 end
-                show(release_wifi)
+                on_ready(release)
             end,
             function(connect_error)
                 if close_notification then
                     pcall(close_notification)
                 end
-                local reason = describeSyncError(connect_error) or _("No network connection")
-                self.dialog_manager:toast(T(_("Cannot open the Grimmory library:\n%1"), reason))
+                on_failed(describeSyncError(connect_error) or _("No network connection"))
             end
         )
+    elseif self:isWifiConnected() then
+        on_ready(function() end)
     else
-        -- WiFi may not be turned on automatically: let KOReader ask
+        -- WiFi may not be turned on automatically: let KOReader ask.  When
+        -- the user declines, nothing happens, as everywhere in KOReader.
         NetworkManager:runWhenOnline(function()
-            show(nil)
+            on_ready(function() end)
         end)
     end
+end
 
-    return true
+--- Connect again after the connection was lost (e.g. while browsing).
+---@param on_ready function()
+---@param on_failed function(reason: string)
+function Grimmory:reconnect(on_ready, on_failed)
+    if self.settings:getSyncEnableWifi() then
+        local close_notification = self.dialog_manager:notify(_("Grimmory: reconnecting…"))
+
+        self.executor:reconnectWifi(
+            function()
+                pcall(close_notification)
+                on_ready()
+            end,
+            function(connect_error)
+                pcall(close_notification)
+                on_failed(describeSyncError(connect_error) or _("No network connection"))
+            end
+        )
+    elseif self:isWifiConnected() then
+        on_ready()
+    else
+        NetworkManager:runWhenOnline(on_ready)
+    end
 end
 
 function Grimmory:isReadyToSync()

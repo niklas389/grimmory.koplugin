@@ -42,6 +42,7 @@ end
 ---@field api GrimmoryAPI
 ---@field updater GrimmorySelfUpdater
 ---@field reading_progress_manager ReadingProgressManager
+---@field with_network function(on_ready: function(release: function), on_failed: function(reason: string))
 local DialogManager = {}
 
 function DialogManager:new(o)
@@ -265,16 +266,26 @@ function DialogManager:showDownloadDirectorySettings()
     UIManager:show(dialog)
 end
 
----@param skip_version_check boolean | nil
----@param check_error string | nil Error of a check that already ran
-function DialogManager:showPluginUpdateCheck(skip_version_check, check_error)
-    if not skip_version_check then
-        -- Refresh the latest version on open.
-        local close_message = self:toast(_("Checking for Updates"), 0)
-        check_error = select(2, self.updater:fetchLatestVersion())
-        pcall(close_message)
-    end
+--- Check for a new release (connecting first) and show the update dialog.
+function DialogManager:showPluginUpdateCheck()
+    local close_message = self:toast(_("Checking for Updates"), 0)
 
+    self.with_network(
+        function(release)
+            local check_error = select(2, self.updater:fetchLatestVersion())
+            release()
+            pcall(close_message)
+            self:showPluginUpdateDialog(check_error)
+        end,
+        function(reason)
+            pcall(close_message)
+            self:showPluginUpdateDialog(reason)
+        end
+    )
+end
+
+---@param check_error string | nil Why the check failed, if it did
+function DialogManager:showPluginUpdateDialog(check_error)
     local dialog
     local latest_version = self.updater:getLatestReleaseVersion()
     local is_update_available = self.updater:isUpdateAvailable()
@@ -298,20 +309,17 @@ function DialogManager:showPluginUpdateCheck(skip_version_check, check_error)
             {
                 {
                     text = update_button_text,
+                    enabled = is_update_available,
                     callback = function()
-                        if is_update_available then
-                            UIManager:close(dialog)
-
-                            self:showPluginUpdater()
-                        end
+                        UIManager:close(dialog)
+                        self:showPluginUpdater()
                     end,
                 },
                 {
-                    text = _("Check for Updates"),
+                    text = _("Check Again"),
                     callback = function()
-                        local fetch_error = select(2, self.updater:fetchLatestVersion())
                         UIManager:close(dialog)
-                        self:showPluginUpdateCheck(true, fetch_error)
+                        self:showPluginUpdateCheck()
                     end,
                 },
             },
@@ -330,32 +338,41 @@ function DialogManager:showPluginUpdateCheck(skip_version_check, check_error)
 end
 
 function DialogManager:showPluginUpdater()
-    local dialog = ProgressbarDialog:new({
-        title = _("Updating Grimmory Plugin"),
-        progress_max = 100,
-        refresh_time_seconds = 3,
-        dismissable = false,
-    })
+    self.with_network(
+        function(release)
+            local dialog = ProgressbarDialog:new({
+                title = _("Updating Grimmory Plugin"),
+                progress_max = 100,
+                refresh_time_seconds = 3,
+                dismissable = false,
+            })
 
-    UIManager:show(dialog)
+            UIManager:show(dialog)
 
-    UIManager:nextTick(function()
-        self.updater:update(
-            function(state, progress, message)
-                dialog:reportProgress(progress)
+            UIManager:nextTick(function()
+                self.updater:update(
+                    function(state, progress, message)
+                        dialog:reportProgress(progress)
 
-                if state == "complete" then
-                    UIManager:close(dialog)
+                        if state == "complete" then
+                            release()
+                            UIManager:close(dialog)
 
-                    UIManager:askForRestart(_("Grimmory plugin update will apply on next Restart."))
-                elseif state == "failed" then
-                    UIManager:close(dialog)
+                            UIManager:askForRestart(_("Grimmory plugin update will apply on next Restart."))
+                        elseif state == "failed" then
+                            release()
+                            UIManager:close(dialog)
 
-                    self:toast(T(_("Failed to update\n%1"), message), 0)
-                end
-            end
-        )
-    end)
+                            self:toast(T(_("Failed to update\n%1"), message), 0)
+                        end
+                    end
+                )
+            end)
+        end,
+        function(reason)
+            self:toast(T(_("Failed to update\n%1"), reason), 0)
+        end
+    )
 end
 
 function DialogManager:showProgressDialog(title, dismiss_callback, dismiss_text)

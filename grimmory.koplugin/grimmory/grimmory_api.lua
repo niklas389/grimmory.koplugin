@@ -112,6 +112,8 @@ end
 ---@field name string
 ---@field book_count number
 ---@field authors string[]
+---@field cover_book_id number | nil Book whose cover represents the series
+---@field cover_updated_on string | nil
 
 ---@class Book
 ---@field id number
@@ -366,7 +368,9 @@ function GrimmoryAPI:request(method, path, data, headers, sink, is_retry)
         )
 
         if not access_token_ok or not access_token or not refresh_token then
-            return false, 0, "Could not get access token"
+            -- Keep the reason (e.g. "connection refused" or "Bad credentials")
+            local reason = not access_token_ok and type(access_token) == "string" and access_token or nil
+            return false, 0, "Could not log in to Grimmory" .. (reason and (": " .. reason) or "")
         end
 
         -- Default expiration to 2 minutes if it's not defined.
@@ -977,10 +981,15 @@ end
 
 ---@return LibrarySeries
 local function parse_app_series(raw)
+    local cover_book = type(raw.coverBooks) == "table" and raw.coverBooks[1] or nil
+
     return {
         name = from_json_string(json_null_to_nil(raw.seriesName), ""),
         book_count = from_json_number(json_null_to_nil(raw.bookCount), 0),
         authors = parse_string_list(raw.authors),
+        cover_book_id = type(cover_book) == "table" and from_json_number(json_null_to_nil(cover_book.bookId)) or nil,
+        cover_updated_on = type(cover_book) == "table"
+            and from_json_string(json_null_to_nil(cover_book.coverUpdatedOn)) or nil,
     }
 end
 
@@ -1068,12 +1077,26 @@ function GrimmoryAPI:getAppBooks(params)
     return self:getAppPage("/api/v1/app/books", params, parse_app_book)
 end
 
+--- Books being read, most recent first (not paged).
+---@return boolean ok
+---@return LibraryBook[] | string books
+function GrimmoryAPI:getAppContinueReading(limit)
+    return self:getAppList("/api/v1/app/books/continue-reading?limit=" .. tostring(limit), parse_app_book)
+end
+
+--- Most recently added books (not paged).
+---@return boolean ok
+---@return LibraryBook[] | string books
+function GrimmoryAPI:getAppRecentlyAdded(limit)
+    return self:getAppList("/api/v1/app/books/recently-added?limit=" .. tostring(limit), parse_app_book)
+end
+
 ---@return boolean ok
 ---@return LibraryPage | string page
-function GrimmoryAPI:getAppMagicShelfBooks(magic_shelf_id, page)
+function GrimmoryAPI:getAppMagicShelfBooks(magic_shelf_id, page, size)
     return self:getAppPage(
         "/api/v1/app/shelves/magic/" .. tostring(tonumber(magic_shelf_id)) .. "/books",
-        { page = page },
+        { page = page, size = size },
         parse_app_book
     )
 end
@@ -1089,18 +1112,41 @@ end
 
 ---@return boolean ok
 ---@return LibraryPage | string page
-function GrimmoryAPI:getAppSeriesBooks(series_name, page)
+function GrimmoryAPI:getAppSeriesBooks(series_name, page, size)
     if series_name:find("/", 1, true) then
         -- The server rejects encoded slashes in paths; use the list filter
         -- (which would split names at commas, hence not the default).
-        return self:getAppBooks({ page = page, series = series_name, sort = "seriesNumber", dir = "asc" })
+        return self:getAppBooks({
+            page = page, size = size, series = series_name, sort = "seriesNumber", dir = "asc",
+        })
     end
 
     return self:getAppPage(
         "/api/v1/app/series/" .. socket_url.escape(series_name) .. "/books",
-        { page = page, sort = "seriesNumber", dir = "asc" },
+        { page = page, size = size, sort = "seriesNumber", dir = "asc" },
         parse_app_book
     )
+end
+
+--- Whether an error message means the network is down or unreachable,
+--- as opposed to an error answered by the server.
+---@param message any
+function GrimmoryAPI.isNetworkError(message)
+    if type(message) ~= "string" then
+        return message == nil
+    end
+
+    local lower = message:lower()
+    for _, pattern in ipairs({
+        "name resolution", "host not found", "refused", "timeout", "timed out", "unreachable",
+        "no route", "closed", "network", "connection",
+    }) do
+        if lower:find(pattern, 1, true) then
+            return true
+        end
+    end
+
+    return false
 end
 
 --- IDs of all books matching a filter (e.g. `{ magicShelfId = 3 }`).
@@ -1173,8 +1219,9 @@ function GrimmoryAPI:getAppBookDetail(book_id)
     return true, detail
 end
 
---- Download a book's cover thumbnail to `destination_path`.
-function GrimmoryAPI:downloadThumbnail(book_id, destination_path)
+--- Download a book's cover thumbnail (or, with `full`, the full size cover)
+--- to `destination_path`.
+function GrimmoryAPI:downloadThumbnail(book_id, destination_path, full)
     local destination_file, file_error = io.open(destination_path, "wb")
     if not destination_file then
         return false, file_error or "Unknown error opening file"
@@ -1182,7 +1229,7 @@ function GrimmoryAPI:downloadThumbnail(book_id, destination_path)
 
     local ok, code, message = self:request(
         "GET",
-        "/api/v1/media/book/" .. tostring(tonumber(book_id)) .. "/thumbnail",
+        "/api/v1/media/book/" .. tostring(tonumber(book_id)) .. (full and "/cover" or "/thumbnail"),
         nil,
         nil,
         ltn12.sink.file(destination_file)

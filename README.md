@@ -20,16 +20,25 @@ The Grimmory plugin is under "Tools" (🛠️) for configuration.
 
 ## Browsing the library
 
-**Tools** -> **Grimmory** -> **Browse Library** lists all books, libraries,
-shelves, magic shelves and series of your Grimmory server, with search.
-Tap a book to see its details, its cover and description, or to download
-and open it.  Books downloaded this way stay on the device and are synced.
+**Tools** -> **Grimmory** -> **Browse Library** (or the gesture action
+"Grimmory: Browse Library") opens your Grimmory library:
 
-Hold a library, shelf or series (or use "Download with automatic sync" inside
-it) to let the automatic sync download its books.  The browser needs a
+- **Tabs**: Home, Books, Series, Shelves (including magic shelves) and
+  Libraries, one tap apart.  Home shows "Continue Reading", "Recently Added"
+  and the shelves, libraries and series the sync downloads.
+- **Covers**: books are shown as a cover list or a cover grid (the button in
+  the title bar switches; the choice is remembered).  Covers load in the
+  background and are kept on the device.
+- **Book page**: tap a book for its cover, details and description, and read
+  it with one tap ("Download & read").  Books downloaded here stay on the
+  device and are synced.
+- **Search** books (or series, in the Series tab) with the magnifier.
+- **Download with automatic sync**: tick it inside a shelf, library or series
+  (or hold its entry) to let the sync download its books.
+
+Each page is loaded with exactly the books it shows, and loaded pages are
+kept for 10 minutes (the refresh button reloads).  The browser needs a
 Grimmory version with the app API (`/api/v1/app`).
-
-The browser can also be assigned to a gesture ("Grimmory: Browse Library").
 
 ## Menu
 

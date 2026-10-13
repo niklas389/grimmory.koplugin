@@ -37,6 +37,7 @@ local logger = GrimmoryLogger:new()
 ---@field sync_pocketbook_background_wifi boolean
 ---@field sync_progress_on_open boolean
 ---@field sync_progress_on_resume boolean
+---@field browser_layout "list" | "grid"
 ---@field sync_periodically boolean
 ---@field sync_frequency number
 ---@field sync_shelves boolean
@@ -72,6 +73,7 @@ local DEFAULTS = {
     sync_pocketbook_background_wifi = false,
     sync_progress_on_open = true,
     sync_progress_on_resume = false,
+    browser_layout = "list",
     sync_periodically = false,
     sync_frequency = 120,
     sync_shelves = true,
@@ -544,6 +546,18 @@ end
 
 function GrimmorySettings:toggleSyncPocketBookBackgroundWifi()
     self.data.sync_pocketbook_background_wifi = not self:getSyncPocketBookBackgroundWifi()
+    self:write()
+end
+
+--- Layout of book lists in the library browser
+---@return "list" | "grid"
+function GrimmorySettings:getBrowserLayout()
+    return self.data.browser_layout == "grid" and "grid" or "list"
+end
+
+---@param layout "list" | "grid"
+function GrimmorySettings:setBrowserLayout(layout)
+    self.data.browser_layout = layout
     self:write()
 end
 
