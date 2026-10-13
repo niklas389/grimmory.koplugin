@@ -18,6 +18,28 @@ your KOReader plugin folder.  Then, restart KOReader.
 
 The Grimmory plugin is under "Tools" (🛠️) for configuration.
 
+## Browsing the library
+
+**Tools** -> **Grimmory** -> **Browse Library** lists all books, libraries,
+shelves, magic shelves and series of your Grimmory server, with search.
+Tap a book to see its details, its cover and description, or to download
+and open it.  Books downloaded this way stay on the device and are synced.
+
+Hold a library, shelf or series (or use "Download with automatic sync" inside
+it) to let the automatic sync download its books.  The browser needs a
+Grimmory version with the app API (`/api/v1/app`).
+
+The browser can also be assigned to a gesture ("Grimmory: Browse Library").
+
+## Menu
+
+- **What to Sync**: reading progress, sessions, annotations, shelves
+- **When to Sync**: opening / closing a book, wake, suspend, power off,
+  periodically
+- **Downloads**: download sources (everything, or chosen shelves, libraries,
+  magic shelves and series), download folder, deleting removed books
+- **Network**: turning WiFi on when needed
+
 ## Updating
 
 Updating can either be done manually by replacing the plugin folder

@@ -16,6 +16,12 @@ local logger = GrimmoryLogger:new()
 ---@field id number
 ---@field name string
 
+---@alias GrimmoryDownloadSourceKind "shelves" | "libraries" | "series" | "magic_shelves"
+
+---@class GrimmoryDownloadSource
+---@field id number | nil Shelf / library / magic shelf ID (nil for series)
+---@field name string
+
 ---@class GrimmorySettingsData
 ---@field automatic_check_updates boolean
 ---@field base_uri string
@@ -36,6 +42,11 @@ local logger = GrimmoryLogger:new()
 ---@field sync_shelves boolean
 ---@field download_remove_books boolean
 ---@field sync_target_shelves GrimmoryTargetShelf[]
+---@field sync_target_libraries GrimmoryDownloadSource[]
+---@field sync_target_series GrimmoryDownloadSource[]
+---@field sync_target_magic_shelves GrimmoryDownloadSource[]
+---@field download_everything boolean | nil nil: derived from the sources (legacy)
+---@field browser_kept_books { [string]: boolean } Grimmory IDs downloaded from the browser
 ---@field sync_download_directory string
 ---@field sync_reading_sessions boolean
 ---@field sync_reading_progress boolean
@@ -66,6 +77,10 @@ local DEFAULTS = {
     sync_shelves = true,
     download_remove_books = false,
     sync_target_shelves = {},
+    sync_target_libraries = {},
+    sync_target_series = {},
+    sync_target_magic_shelves = {},
+    browser_kept_books = {},
     sync_download_directory = "grimmory/",
     sync_reading_sessions = true,
     sync_reading_progress = true,
@@ -269,13 +284,114 @@ function GrimmorySettings:setDownloadDirectory(directory)
     self:write()
 end
 
-function GrimmorySettings:getDownloadTargetShelves()
-    return self.data.sync_target_shelves or DEFAULTS.sync_target_shelves
+local DOWNLOAD_SOURCE_KEYS = {
+    shelves = "sync_target_shelves",
+    libraries = "sync_target_libraries",
+    series = "sync_target_series",
+    magic_shelves = "sync_target_magic_shelves",
+}
+
+---@param kind GrimmoryDownloadSourceKind
+---@return GrimmoryDownloadSource[]
+function GrimmorySettings:getDownloadSources(kind)
+    local key = DOWNLOAD_SOURCE_KEYS[kind]
+    local sources = key and self.data[key]
+
+    if type(sources) ~= "table" then
+        return {}
+    end
+
+    return sources
 end
 
----@param target_shelves GrimmoryTargetShelf[]
-function GrimmorySettings:setDownloadTargetShelves(target_shelves)
-    self.data.sync_target_shelves = target_shelves
+local function sourceMatches(kind, source, id_or_name)
+    if kind == "series" then
+        return source.name == id_or_name
+    end
+
+    return source.id == id_or_name
+end
+
+---@param kind GrimmoryDownloadSourceKind
+---@param id_or_name number | string ID, or the name for series
+function GrimmorySettings:isDownloadSource(kind, id_or_name)
+    for _, source in ipairs(self:getDownloadSources(kind)) do
+        if sourceMatches(kind, source, id_or_name) then
+            return true
+        end
+    end
+
+    return false
+end
+
+---@param kind GrimmoryDownloadSourceKind
+---@param source GrimmoryDownloadSource
+---@param enabled boolean
+function GrimmorySettings:setDownloadSource(kind, source, enabled)
+    local key = DOWNLOAD_SOURCE_KEYS[kind]
+    local id_or_name = kind == "series" and source.name or source.id
+    local sources = {}
+
+    -- Fix the "everything" choice before the sources change, otherwise the
+    -- legacy "no sources means everything" rule would flip it.
+    self.data.download_everything = self:getDownloadEverything()
+
+    for _, existing in ipairs(self:getDownloadSources(kind)) do
+        if not sourceMatches(kind, existing, id_or_name) then
+            table.insert(sources, existing)
+        end
+    end
+
+    if enabled then
+        table.insert(sources, { id = source.id, name = source.name })
+    end
+
+    self.data[key] = sources
+    self:write()
+end
+
+---@return boolean
+function GrimmorySettings:hasDownloadSources()
+    for kind, _ in pairs(DOWNLOAD_SOURCE_KEYS) do
+        if #self:getDownloadSources(kind) > 0 then
+            return true
+        end
+    end
+
+    return false
+end
+
+--- Download every book of the library, ignoring the sources.
+function GrimmorySettings:getDownloadEverything()
+    if self.data.download_everything == nil then
+        -- Before sources existed, "no shelf selected" meant "all books".
+        return not self:hasDownloadSources()
+    end
+
+    return self.data.download_everything == true
+end
+
+function GrimmorySettings:toggleDownloadEverything()
+    self.data.download_everything = not self:getDownloadEverything()
+    self:write()
+end
+
+--- Books downloaded from the library browser.  The sync keeps them on the
+--- device (and syncs them) even when they are not in a download source.
+---@param grimmory_id number
+function GrimmorySettings:isKeptBook(grimmory_id)
+    local kept = self.data.browser_kept_books
+    return type(kept) == "table" and kept[tostring(grimmory_id)] == true
+end
+
+---@param grimmory_id number
+---@param kept boolean
+function GrimmorySettings:setKeptBook(grimmory_id, kept)
+    if type(self.data.browser_kept_books) ~= "table" then
+        self.data.browser_kept_books = {}
+    end
+
+    self.data.browser_kept_books[tostring(grimmory_id)] = kept or nil
     self:write()
 end
 

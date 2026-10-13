@@ -7,13 +7,10 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local UIManager = require("ui/uimanager")
 
 local PluginMetadata = require("grimmory/plugin_metadata")
-local GrimmoryLogger = require("grimmory/logger")
-
-local logger = GrimmoryLogger:new()
-
 ---@class GrimmoryMenu
 ---@field ui any This is a ReaderUI
 ---@field settings GrimmorySettings
+---@field api GrimmoryAPI
 ---@field dialog_manager DialogManager
 ---@field updater GrimmorySelfUpdater
 ---@field interrupt_sync function
@@ -73,335 +70,357 @@ function GrimmoryMenu:getAboutMenu()
     }
 end
 
-function GrimmoryMenu:getAutomaticSyncOptionsMenu()
-    local menu = {
+local function settingsChanged()
+    UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
+end
+
+--- A checkbox menu entry for a boolean setting.
+function GrimmoryMenu:toggleItem(text, getter, toggler, extra)
+    local item = {
+        text = text,
+        checked_func = function()
+            return self.settings[getter](self.settings)
+        end,
+        callback = function()
+            self.settings[toggler](self.settings)
+            settingsChanged()
+        end,
+        keep_menu_open = true,
+    }
+
+    for key, value in pairs(extra or {}) do
+        item[key] = value
+    end
+
+    return item
+end
+
+function GrimmoryMenu:isConfigured()
+    return self.settings:getBaseUri() ~= ""
+end
+
+--- What is synchronized (independent of when and what is downloaded)
+function GrimmoryMenu:getWhatToSyncMenu()
+    return {
+        self:toggleItem(_("Reading Progress"), "getSyncReadingProgress", "toggleSyncReadingProgress"),
+        self:toggleItem(_("Reading Sessions"), "getSyncReadingSessions", "toggleSyncReadingSessions"),
         {
-            text = _("Check Progress on Open Document"),
+            text = _("Reading Session Thresholds"),
             enabled_func = function()
-                return self.settings:getSyncReadingProgress()
-            end,
-            checked_func = function()
-                return self.settings:getSyncProgressOnOpen()
+                return self.settings:getSyncReadingSessions()
             end,
             callback = function()
-                self.settings:toggleSyncProgressOnOpen()
-                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
+                self.dialog_manager:showSessionThresholdSettings()
             end,
-            keep_menu_open = true,
         },
-        {
-            text = _("Check Progress on Wake"),
+        self:toggleItem(_("Annotations"), "getSyncAnnotations", "toggleSyncAnnotations", { separator = true }),
+        self:toggleItem(_("Shelves as Collections"), "getSyncShelves", "toggleSyncShelves"),
+        self:toggleItem(_("Keep Empty Shelves"), "getSyncRetainEmptyShelves", "toggleSyncRetainEmptyShelves", {
             enabled_func = function()
-                return self.settings:getSyncReadingProgress()
+                return self.settings:getSyncShelves()
             end,
+        }),
+    }
+end
+
+--- Checkbox entries for the shelves / libraries / magic shelves of the server
+---@param kind GrimmoryDownloadSourceKind
+function GrimmoryMenu:getSourceCollectionsMenu(kind, load)
+    local ok, collections = load()
+
+    if not ok or type(collections) ~= "table" then
+        return {
+            {
+                text = T(_("Could not load from Grimmory: %1"), tostring(collections)),
+                enabled = false,
+            },
+        }
+    end
+
+    local items = {}
+
+    for _, collection in ipairs(collections) do
+        table.insert(items, {
+            text = collection.name,
             checked_func = function()
-                return self.settings:getSyncProgressOnResume()
+                return self.settings:isDownloadSource(kind, collection.id)
             end,
             callback = function()
-                self.settings:toggleSyncProgressOnResume()
-                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
+                local enabled = self.settings:isDownloadSource(kind, collection.id)
+                self.settings:setDownloadSource(kind, collection, not enabled)
+                settingsChanged()
             end,
             keep_menu_open = true,
+        })
+    end
+
+    if #items == 0 then
+        table.insert(items, { text = _("None on the server"), enabled = false })
+    end
+
+    return items
+end
+
+---@param kind GrimmoryDownloadSourceKind
+function GrimmoryMenu:getSourceSummary(kind)
+    local names = {}
+    for _, source in ipairs(self.settings:getDownloadSources(kind)) do
+        table.insert(names, source.name)
+    end
+
+    if #names == 0 then
+        return _("none")
+    end
+
+    return table.concat(names, ", ")
+end
+
+--- Where the automatic sync downloads books from
+function GrimmoryMenu:getDownloadSourcesMenu()
+    local function sources_enabled()
+        return self:isConfigured() and not self.settings:getDownloadEverything()
+    end
+
+    local function collection_source(kind, title, load)
+        return {
+            text_func = function()
+                return T(title, self:getSourceSummary(kind))
+            end,
+            enabled_func = sources_enabled,
+            sub_item_table_func = function()
+                return self:getSourceCollectionsMenu(kind, load)
+            end,
+        }
+    end
+
+    return {
+        self:toggleItem(_("Everything"), "getDownloadEverything", "toggleDownloadEverything", {
+            help_text = _("Download every book of the library. Turn off to choose shelves, libraries or series."),
+            separator = true,
+        }),
+        collection_source("shelves", _("Shelves: %1"), function()
+            return self.api:getAppShelves()
+        end),
+        collection_source("libraries", _("Libraries: %1"), function()
+            return self.api:getAppLibraries()
+        end),
+        collection_source("magic_shelves", _("Magic Shelves: %1"), function()
+            return self.api:getAppMagicShelves()
+        end),
+        {
+            text_func = function()
+                return T(_("Series: %1"), self:getSourceSummary("series"))
+            end,
+            enabled_func = sources_enabled,
+            sub_item_table_func = function()
+                local items = {}
+
+                for _, source in ipairs(self.settings:getDownloadSources("series")) do
+                    table.insert(items, {
+                        text = source.name,
+                        checked_func = function()
+                            return self.settings:isDownloadSource("series", source.name)
+                        end,
+                        callback = function()
+                            local enabled = self.settings:isDownloadSource("series", source.name)
+                            self.settings:setDownloadSource("series", source, not enabled)
+                            settingsChanged()
+                        end,
+                        keep_menu_open = true,
+                    })
+                end
+
+                table.insert(items, {
+                    text = _("Add series in the library browser"),
+                    help_text = _("Open a series in Browse Library and turn on “Download with automatic sync”."),
+                    callback = function()
+                        UIManager:broadcastEvent(Event:new("GrimmoryBrowseLibrary"))
+                    end,
+                })
+
+                return items
+            end,
             separator = true,
         },
         {
-            text = _("On Close Document"),
-            checked_func = function()
-                return self.settings:getSyncOnCloseDocument()
-            end,
-            callback = function()
-                self.settings:toggleSyncOnCloseDocument()
-                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
-            end,
-            keep_menu_open = true,
+            text = _("Books downloaded from the library browser are always kept and synced."),
+            enabled = false,
         },
+    }
+end
+
+function GrimmoryMenu:getDownloadsMenu()
+    return {
+        self:toggleItem(_("Download Books with Sync"), "getDownloadsBooks", "toggleDownloadsBooks", {
+            help_text = _("The full sync downloads the books of the download sources."),
+        }),
         {
-            text = _("On Suspend"),
-            checked_func = function()
-                return self.settings:getSyncOnSuspend()
+            text = _("Download Sources"),
+            enabled_func = function()
+                return self.settings:getDownloadsBooks()
             end,
-            callback = function()
-                self.settings:toggleSyncOnSuspend()
-                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
+            sub_item_table_func = function()
+                return self:getDownloadSourcesMenu()
             end,
-            keep_menu_open = true,
-        },
-        {
-            text = _("On Power Off"),
-            checked_func = function()
-                return self.settings:getSyncOnPowerOff()
-            end,
-            callback = function()
-                self.settings:toggleSyncOnPowerOff()
-                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
-            end,
-            keep_menu_open = true,
-            separator = true,
-        },
-        {
-            text = _("Periodically Sync"),
-            checked_func = function()
-                return self.settings:getSyncPeriodically()
-            end,
-            callback = function()
-                self.settings:toggleSyncPeriodically()
-                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
-            end,
-            keep_menu_open = true,
         },
         {
             text_func = function()
-                local frequency = self.settings:getSyncFrequency()
-                return T(_("Frequency: %1 minutes"), frequency)
+                return T(_("Download Folder: %1"), self.settings:getDownloadDirectory() or "")
+            end,
+            callback = function()
+                self.dialog_manager:showDownloadDirectorySettings()
+            end,
+            separator = true,
+        },
+        self:toggleItem(_("Delete Books No Longer in Sources"), "getDownloadRemoveBooks", "toggleDownloadRemoveBooks", {
+            help_text = _("Delete downloaded books that are no longer in a download source. " ..
+                "When off, they only leave their Grimmory collections."),
+        }),
+    }
+end
+
+--- When the plugin syncs automatically
+function GrimmoryMenu:getWhenToSyncMenu()
+    local function progress_enabled()
+        return self.settings:getSyncReadingProgress()
+    end
+
+    return {
+        self:toggleItem(_("Check Progress When Opening a Book"), "getSyncProgressOnOpen", "toggleSyncProgressOnOpen", {
+            enabled_func = progress_enabled,
+        }),
+        self:toggleItem(_("Check Progress on Wake"), "getSyncProgressOnResume", "toggleSyncProgressOnResume", {
+            enabled_func = progress_enabled,
+        }),
+        self:toggleItem(_("Sync Book When Closing It"), "getSyncOnCloseDocument", "toggleSyncOnCloseDocument", {
+            help_text = _("Send the closed book's reading progress and sessions."),
+            separator = true,
+        }),
+        self:toggleItem(_("Sync on Suspend"), "getSyncOnSuspend", "toggleSyncOnSuspend", {
+            help_text = _("Only uses an existing connection; WiFi is not turned on."),
+        }),
+        self:toggleItem(_("Sync on Power Off"), "getSyncOnPowerOff", "toggleSyncOnPowerOff", {
+            help_text = _("Only uses an existing connection; WiFi is not turned on."),
+            separator = true,
+        }),
+        self:toggleItem(_("Sync Everything Periodically"), "getSyncPeriodically", "toggleSyncPeriodically"),
+        {
+            text_func = function()
+                return T(_("Every %1 minutes"), self.settings:getSyncFrequency())
+            end,
+            enabled_func = function()
+                return self.settings:getSyncPeriodically()
             end,
             callback = function()
                 self.dialog_manager:showSyncFrequencySettings()
             end,
-            separator = true,
         },
-        {
-            text = _("Enable WiFi"),
+    }
+end
+
+function GrimmoryMenu:getNetworkMenu()
+    local menu = {
+        self:toggleItem(_("Turn On WiFi When Needed"), "getSyncEnableWifi", "toggleSyncEnableWifi", {
             enabled = Device:hasWifiToggle(),
-            checked_func = function()
-                return self.settings:getSyncEnableWifi()
-            end,
-            callback = function()
-                self.settings:toggleSyncEnableWifi()
-                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
-            end,
-        },
+            help_text = _("Turn WiFi on for syncs and the library browser, and off again afterwards."),
+        }),
     }
 
     if Device:isPocketBook() then
-        table.insert(menu, {
-            text = _("Connect WiFi in Background (experimental)"),
-            help_text = _(
-                "Turn on WiFi with PocketBook's system network tool instead of KOReader's " ..
-                "connection, so reading is not interrupted while connecting.\n\n" ..
-                "If the background connection does not work on this device, the regular " ..
-                "(blocking) connection is used after 30 seconds."
-            ),
-            enabled_func = function()
-                return self.settings:getSyncEnableWifi()
-            end,
-            checked_func = function()
-                return self.settings:getSyncPocketBookBackgroundWifi()
-            end,
-            callback = function()
-                self.settings:toggleSyncPocketBookBackgroundWifi()
-                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
-            end,
-        })
+        table.insert(menu, self:toggleItem(
+            _("Connect WiFi in Background (experimental)"),
+            "getSyncPocketBookBackgroundWifi",
+            "toggleSyncPocketBookBackgroundWifi",
+            {
+                help_text = _(
+                    "Turn on WiFi with PocketBook's system network tool instead of KOReader's " ..
+                    "connection, so reading is not interrupted while connecting.\n\n" ..
+                    "If the background connection does not work on this device, the regular " ..
+                    "(blocking) connection is used after 30 seconds."
+                ),
+                enabled_func = function()
+                    return self.settings:getSyncEnableWifi()
+                end,
+            }
+        ))
     end
 
     return menu
 end
 
-function GrimmoryMenu:getSyncOptionsMenu()
-    return {
-        {
-            text = _("Sync Reading Sessions"),
-            checked_func = function()
-                return self.settings:getSyncReadingSessions()
-            end,
-            callback = function()
-                self.settings:toggleSyncReadingSessions()
-                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
-            end,
-        },
-        {
-            text = _("Reading Session Thresholds"),
-            callback = function()
-                self.dialog_manager:showSessionThresholdSettings()
-            end,
-            separator = true,
-        },
-        {
-            text = _("Sync Annotations"),
-            checked_func = function()
-                return self.settings:getSyncAnnotations()
-            end,
-            callback = function()
-                self.settings:toggleSyncAnnotations()
-                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
-            end,
-            separator = true,
-        },
-        {
-            text = _("Sync Reading Progress"),
-            checked_func = function()
-                return self.settings:getSyncReadingProgress()
-            end,
-            callback = function()
-                self.settings:toggleSyncReadingProgress()
-                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
-            end,
-            separator = true,
-        },
-        {
-            text = _("Sync Shelves"),
-            checked_func = function()
-                return self.settings:getSyncShelves()
-            end,
-            callback = function()
-                self.settings:toggleSyncShelves()
-                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
-            end,
-        },
-        {
-            text = _("Sync Empty Shelves"),
-            enabled_func = function()
-                return self.settings:getSyncShelves()
-            end,
-            checked_func = function()
-                return self.settings:getSyncShelves() and self.settings:getSyncRetainEmptyShelves()
-            end,
-            callback = function()
-                self.settings:toggleSyncRetainEmptyShelves()
-                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
-            end,
-        },
-    }
-end
-
-function GrimmoryMenu:getDownloadOptionsMenu()
-    return {
-        {
-            text = _("Set Download Directory"),
-            callback = function()
-                self.dialog_manager:showDownloadDirectorySettings()
-            end,
-        },
-        {
-            text_func = function()
-                local targetDescription = "All"
-
-                local targetShelves = self.settings:getDownloadTargetShelves()
-
-                local count = 0
-                for _, shelf in ipairs(targetShelves) do
-                    if count == 0 then
-                        targetDescription = shelf.name
-                    else
-                        targetDescription = targetDescription .. ", " .. shelf.name
-                    end
-                    count = count + 1
-                end
-
-                return T(_("Source Shelves: %1"), targetDescription)
-            end,
-            enabled_func = function()
-                if self.settings:getBaseUri() == "" then
-                    logger:info("BaseURI is not configured, cannot fetch shelves")
-                    return false
-                end
-
-                return true
-            end,
-            callback = function()
-                self.dialog_manager:showTargetShelvesSettings()
-            end,
-            separator = true,
-        },
-        {
-            text = _("Permanently Delete Removed Books"),
-            checked_func = function()
-                return self.settings:getDownloadRemoveBooks()
-            end,
-            callback = function()
-                self.settings:toggleDownloadRemoveBooks()
-                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
-            end,
-        }
-    }
-end
-
 function GrimmoryMenu:getTopMenu()
     local menu = {
         {
-            text = _("Connection Settings"),
+            text = _("Browse Library"),
+            enabled_func = function()
+                return self:isConfigured()
+            end,
+            callback = function()
+                UIManager:broadcastEvent(Event:new("GrimmoryBrowseLibrary"))
+            end,
+        },
+    }
+
+    if self.ui ~= nil and self.ui.document ~= nil then
+        table.insert(menu, {
+            text = _("Sync This Book Now"),
+            enabled_func = function()
+                return self:isConfigured() and self.interrupt_sync == nil
+            end,
+            callback = function()
+                UIManager:broadcastEvent(Event:new("GrimmorySyncOpenBook", true))
+            end,
+        })
+    end
+
+    if self.interrupt_sync == nil then
+        table.insert(menu, {
+            text = _("Sync Everything Now"),
+            enabled_func = function()
+                return self:isConfigured()
+            end,
+            callback = function()
+                UIManager:broadcastEvent(Event:new("GrimmorySync", true))
+            end,
+            separator = true,
+        })
+    else
+        table.insert(menu, {
+            text = _("Interrupt Current Sync"),
+            callback = function()
+                if self.interrupt_sync ~= nil then
+                    UIManager:show(ConfirmBox:new({
+                        text = _("Are you sure you want to interrupt synchronization?"),
+                        ok_callback = function()
+                            pcall(self.interrupt_sync)
+                        end,
+                    }))
+                end
+            end,
+            separator = true,
+        })
+    end
+
+    local settings_entries = {
+        { text = _("What to Sync"), sub_item_table_func = function() return self:getWhatToSyncMenu() end },
+        { text = _("When to Sync"), sub_item_table_func = function() return self:getWhenToSyncMenu() end },
+        { text = _("Downloads"), sub_item_table_func = function() return self:getDownloadsMenu() end },
+        {
+            text = _("Network"),
+            sub_item_table_func = function() return self:getNetworkMenu() end,
+            separator = true,
+        },
+        {
+            text = _("Server Connection"),
             callback = function()
                 self.dialog_manager:showConnectionSettings()
             end,
         },
-        {
-            text = _("Automatic Sync"),
-            sub_item_table = self:getAutomaticSyncOptionsMenu()
-        },
-        {
-            text = _("Sync Configuration"),
-            sub_item_table = self:getSyncOptionsMenu(),
-            separator = true,
-        },
-        {
-            text = _("Download Books"),
-            checked_func = function()
-                return self.settings:getDownloadsBooks()
-            end,
-            callback = function()
-                self.settings:toggleDownloadsBooks()
-                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
-            end,
-        },
-        {
-            text = _("Download Configuration"),
-            sub_item_table = self:getDownloadOptionsMenu(),
-            separator = true,
-        },
-        {
-            text = _("About Grimmory Sync"),
-            sub_item_table = self:getAboutMenu(),
-        },
+        { text = _("About Grimmory Sync"), sub_item_table = self:getAboutMenu() },
     }
 
-    if self.interrupt_sync == nil then
-        table.insert(
-            menu, 1,
-            {
-                text = _("Sync Everything Now"),
-                enabled_func = function()
-                    return self.settings:getBaseUri() ~= ""
-                end,
-                callback = function()
-                    UIManager:broadcastEvent(Event:new("GrimmorySync", true))
-                end,
-                separator = true,
-            }
-        )
-    else
-        table.insert(
-            menu, 1,
-            {
-                text = _("Interrupt Current Sync"),
-                callback = function()
-                    if self.interrupt_sync ~= nil then
-                        local dialog = ConfirmBox:new({
-                            text = _("Are you sure you want to interrupt synchronization?"),
-                            ok_callback = function()
-                                pcall(self.interrupt_sync)
-                            end,
-                        })
-                        UIManager:show(dialog)
-                    end
-                end,
-                separator = true,
-            }
-        )
-    end
-
-    if self.ui ~= nil and self.ui.document ~= nil then
-        table.insert(
-            menu, 1,
-            {
-                text = _("Sync Open Book Now"),
-                enabled_func = function()
-                    return self.settings:getBaseUri() ~= "" and self.interrupt_sync == nil
-                end,
-                callback = function()
-                    UIManager:broadcastEvent(Event:new("GrimmorySyncOpenBook", true))
-                end,
-            }
-        )
+    for _, entry in ipairs(settings_entries) do
+        table.insert(menu, entry)
     end
 
     return menu

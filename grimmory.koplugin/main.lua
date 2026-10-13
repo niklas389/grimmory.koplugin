@@ -73,6 +73,13 @@ local Grimmory = WidgetContainer:extend{
 }
 
 function Grimmory:onDispatcherRegisterActions()
+  Dispatcher:registerAction("grimmory_browse_library", {
+    category = "none",
+    event = "GrimmoryBrowseLibrary",
+    title = _("Grimmory: Browse Library"),
+    general = true,
+  })
+
   Dispatcher:registerAction("grimmory_sync_foreground", {
     category = "none",
     event = "GrimmorySyncForegound",
@@ -151,6 +158,7 @@ function Grimmory:init()
     self.menu = GrimmoryMenu:new({
         ui = self.ui,
         settings = self.settings,
+        api = self.api,
         dialog_manager = self.dialog_manager,
         updater = self.updater,
     })
@@ -440,6 +448,62 @@ function Grimmory:pullProgressForOpenBook()
         end,
         self.settings:getSyncEnableWifi()
     )
+end
+
+function Grimmory:onGrimmoryBrowseLibrary()
+    if self.settings:getBaseUri() == "" then
+        self.dialog_manager:toast(_("Set up the Grimmory connection first"))
+        return true
+    end
+
+    local function show(release_wifi)
+        local LibraryBrowser = require("grimmory/ui/library_browser")
+
+        UIManager:show(LibraryBrowser:new({
+            api = self.api,
+            settings = self.settings,
+            repository = self.repository,
+            executor = self.executor,
+            synchronizer = self.synchronizer,
+            dialog_manager = self.dialog_manager,
+            release_wifi = release_wifi,
+            is_sync_running = function()
+                return self.is_synchronizing or sync_in_progress
+            end,
+        }))
+    end
+
+    if self.settings:getSyncEnableWifi() then
+        -- Keep WiFi on while browsing; turned off again on close if the
+        -- plugin turned it on.
+        local close_notification
+        if not self:isWifiConnected() then
+            close_notification = self.dialog_manager:notify(_("Grimmory: connecting…"))
+        end
+
+        self.executor:holdWifi(
+            function(release_wifi)
+                if close_notification then
+                    pcall(close_notification)
+                end
+                show(release_wifi)
+            end,
+            function(connect_error)
+                if close_notification then
+                    pcall(close_notification)
+                end
+                local reason = describeSyncError(connect_error) or _("No network connection")
+                self.dialog_manager:toast(T(_("Cannot open the Grimmory library:\n%1"), reason))
+            end
+        )
+    else
+        -- WiFi may not be turned on automatically: let KOReader ask
+        NetworkManager:runWhenOnline(function()
+            show(nil)
+        end)
+    end
+
+    return true
 end
 
 function Grimmory:isReadyToSync()

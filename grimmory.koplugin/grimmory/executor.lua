@@ -357,6 +357,38 @@ local function release_wifi()
     end
 end
 
+--- Connect to the network (turning WiFi on) and keep the connection until
+--- the returned `release` is called, e.g. while the library browser is open.
+--- WiFi turned on here is turned off again once nothing uses it any more.
+---@param on_ready function(release: function)
+---@param on_failed function(error: string)
+function GrimmoryExecutor:holdWifi(on_ready, on_failed)
+    return wrap_coroutine(function()
+        wifi_users = wifi_users + 1
+
+        local released = false
+        local function release()
+            if not released then
+                released = true
+                release_wifi()
+            end
+        end
+
+        local use_pocketbook_netagent = self.settings ~= nil and
+            self.settings:getSyncPocketBookBackgroundWifi()
+
+        local connected, connect_error = connect_wifi(use_pocketbook_netagent)
+
+        if not connected then
+            release()
+            on_failed(connect_error)
+            return
+        end
+
+        on_ready(release)
+    end)
+end
+
 ---@alias GrimmoryRunnableProgressCallback function(state: any, terminate: function): bool
 ---@alias GrimmoryRunnable function(callback: BackgroundRunnableProgressCallback)
 ---@alias GrimmoryBackgroundStart function(runnable: GrimmoryRunnable, progress: GrimmoryRunnableProgressCallback)
