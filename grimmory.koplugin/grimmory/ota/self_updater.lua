@@ -3,7 +3,6 @@ local T = require("ffi/util").template
 
 local Archiver = require("ffi/archiver")
 local DataStorage = require("datastorage")
-local NetworkManager = require("ui/network/manager")
 local util = require("util")
 local sha2 = require("ffi/sha2")
 
@@ -214,13 +213,19 @@ function GrimmorySelfUpdater:fetchLatestVersion()
         return false, g("No repository defined")
     end
 
-    local ok, version = self.github_api:getLatestReleaseVersion(
+    local ok, version, code = self.github_api:getLatestReleaseVersion(
         PluginMetadata.getRepository()
     )
 
     if not ok or not version then
-        logger:warn("Could not fetch latest release of", PluginMetadata.getRepository())
-        return false, T(g("No release found for %1"), PluginMetadata.getRepository())
+        logger:warn("Could not fetch latest release of", PluginMetadata.getRepository(), code)
+        if code == 404 then
+            return false, T(g("No release found for %1"), PluginMetadata.getRepository())
+        end
+        if code == 0 or code == nil then
+            return false, g("GitHub is not reachable. Check the network connection.")
+        end
+        return false, T(g("GitHub answered with error %1."), code)
     end
 
     self.latest_known_version = version
@@ -322,35 +327,36 @@ function GrimmorySelfUpdater:extractPlugin(source_path, target_path)
     return true, nil
 end
 
+--- Download and install the latest release.  The caller makes sure the
+--- device is online (KOReader's goOnlineToRun silently does nothing unless
+--- WiFi may be turned on without asking).
 function GrimmorySelfUpdater:update(progress_callback)
-    NetworkManager:goOnlineToRun(function()
-        local download_ok, download_path = self:downloadLatestRelease(progress_callback)
+    local download_ok, download_path = self:downloadLatestRelease(progress_callback)
 
-        if not download_ok then
-            if progress_callback then
-                progress_callback("failed", 100, download_path)
-            end
-            return
-        end
-
-        local extract_ok, extract_message = self:extractPlugin(download_path, self.plugin_path)
-
-        util.removeFile(download_path)
-
-        if not extract_ok then
-            logger:err("Extraction failed:", extract_message)
-            if progress_callback then
-                progress_callback("failed", 100, extract_message)
-            end
-            return
-        end
-
-        self.is_pending_restart = true
-
+    if not download_ok then
         if progress_callback then
-            progress_callback("complete", 100, nil)
+            progress_callback("failed", 100, download_path)
         end
-    end)
+        return
+    end
+
+    local extract_ok, extract_message = self:extractPlugin(download_path, self.plugin_path)
+
+    util.removeFile(download_path)
+
+    if not extract_ok then
+        logger:err("Extraction failed:", extract_message)
+        if progress_callback then
+            progress_callback("failed", 100, extract_message)
+        end
+        return
+    end
+
+    self.is_pending_restart = true
+
+    if progress_callback then
+        progress_callback("complete", 100, nil)
+    end
 end
 
 return GrimmorySelfUpdater

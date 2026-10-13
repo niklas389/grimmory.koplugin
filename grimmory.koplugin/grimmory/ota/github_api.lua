@@ -98,16 +98,17 @@ function GithubAPI:request(method, uri, data, sink)
 end
 
 ---@param repository string
----@return boolean
----@return string | nil
+---@return boolean ok
+---@return string | nil version
+---@return number | nil code HTTP status of a failed request (0: no connection)
 function GithubAPI:getLatestReleaseVersion(repository)
-    local ok, _, response = self:request(
+    local ok, code, response = self:request(
         "GET",
         self.base_uri .. "/repos/" .. repository .. "/releases/latest"
     )
 
     if not ok or not response or type(response) == "string" then
-        return false, nil
+        return false, nil, code
     end
 
     return true, response.tag_name

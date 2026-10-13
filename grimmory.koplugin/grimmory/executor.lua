@@ -342,6 +342,44 @@ local function connect_wifi(use_pocketbook_netagent)
     return connection_failure()
 end
 
+-- PocketBook's firmware drops WiFi after ~100 s without traffic.  KOReader
+-- pings to prevent that, but only for connections it made with NetConnect,
+-- not for the background (netagent) connection; and while the library
+-- browser is open there may be no traffic for minutes.  So ping while the
+-- plugin uses WiFi, like KOReader does.
+local KEEPALIVE_INTERVAL_SECONDS = 30
+local keepalive_scheduled = false
+
+local function pocketbook_ping()
+    local ok, err = pcall(function()
+        local inkview = require("ffi/inkview")
+        if ffi.C.POCKETBOOK_VERSION >= 508 then
+            inkview.NetMgrPing()
+        end
+    end)
+
+    if not ok then
+        logger:warn("WiFi keep-alive ping failed:", err)
+    end
+end
+
+local function keep_wifi_alive()
+    if wifi_users == 0 or not NetworkManager:isWifiOn() then
+        keepalive_scheduled = false
+        return
+    end
+
+    pocketbook_ping()
+    UIManager:scheduleIn(KEEPALIVE_INTERVAL_SECONDS, keep_wifi_alive)
+end
+
+local function start_keepalive()
+    if Device:isPocketBook() and not keepalive_scheduled then
+        keepalive_scheduled = true
+        UIManager:scheduleIn(KEEPALIVE_INTERVAL_SECONDS, keep_wifi_alive)
+    end
+end
+
 local function release_wifi()
     wifi_users = math.max(0, wifi_users - 1)
 
@@ -385,7 +423,28 @@ function GrimmoryExecutor:holdWifi(on_ready, on_failed)
             return
         end
 
+        start_keepalive()
         on_ready(release)
+    end)
+end
+
+--- Connect again after the connection was lost (e.g. while the library
+--- browser was open), without registering another WiFi user.
+---@param on_ready function()
+---@param on_failed function(error: string)
+function GrimmoryExecutor:reconnectWifi(on_ready, on_failed)
+    return wrap_coroutine(function()
+        local use_pocketbook_netagent = self.settings ~= nil and
+            self.settings:getSyncPocketBookBackgroundWifi()
+
+        local connected, connect_error = connect_wifi(use_pocketbook_netagent)
+
+        if connected then
+            start_keepalive()
+            on_ready()
+        else
+            on_failed(connect_error)
+        end
     end)
 end
 
