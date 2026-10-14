@@ -12,7 +12,6 @@ package.preload["gettext"] = function()
 end
 
 package.preload["grimmory/plugin_metadata"] = function() return {} end
-package.preload["grimmory/datetime"] = function() return {} end
 
 local fake_logger = {
     err = function() end,

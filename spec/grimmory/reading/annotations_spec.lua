@@ -5,6 +5,16 @@ local stub = require 'luassert.stub'
 
 package.path = "grimmory.koplugin/?.lua;" .. package.path
 
+-- Other specs may have loaded the real modules: make require use the fakes
+for _, name in ipairs({ "document/documentregistry", "grimmory/cfi_resolver", "grimmory/reading/annotations" }) do
+    package.loaded[name] = nil
+end
+
+package.preload["grimmory/logger"] = function()
+    local quiet = function() end
+    return { new = function() return { err = quiet, warn = quiet, info = quiet, dbg = quiet } end }
+end
+
 
 local fake_document = stub.new()
 local mock_has_provider = spy.new(function() return true end)
@@ -36,6 +46,7 @@ local remote_grimmory_annotation = {
     ["chapter"] = "Logical Reading Order",
     ["color"] = "",
     ["created_at"] = 1781321340,
+    ["cfi"] = "epubcfi(/6/4!/4/2,/1:0,/1:10)",
     ["style"] = "highlight",
     ["page"] = "start",
     ["pos0"] = "start",
@@ -72,7 +83,9 @@ local local_annotation = {
 
 describe("GrimmoryReadingAnnotations", function()
     before_each(function()
+        -- A reflowable (CRE) document: only those have CFI positions
         fake_document.loadDocument = spy.new(function() return true end)
+        fake_document.getHTMLFromXPointer = spy.new(function() return "" end)
         fake_document.close = spy.new(function() end)
 
         fake_cfi_resolver.cfiRangeToXPointers = spy.new(function() return "start", "end" end)
