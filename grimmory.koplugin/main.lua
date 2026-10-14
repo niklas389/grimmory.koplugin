@@ -453,7 +453,7 @@ function Grimmory:pullProgressForOpenBook()
             -- Connecting WiFi and asking the server can take a while, so show
             -- that something is happening (a small corner icon, not to
             -- distract from reading).
-            local close_notification = self.dialog_manager:showSyncIndicator()
+            local sync_indicator = self.dialog_manager:showSyncIndicator("download")
 
             local run_ok, ok, latest_progress = pcall(
                 run,
@@ -463,7 +463,7 @@ function Grimmory:pullProgressForOpenBook()
                 end
             )
 
-            pcall(close_notification)
+            sync_indicator:done(run_ok and ok)
 
             if not run_ok or not ok then
                 local error_result = run_ok and latest_progress or ok
@@ -844,7 +844,7 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
         sync_in_progress = true
         self.menu:onGrimmorySyncStart(queue_terminate)
 
-        local update_callback, close_callback
+        local update_callback, close_callback, sync_indicator
         if verbose then
             update_callback, close_callback = self.dialog_manager:showProgressDialog(
                 _("Synchronizing to Grimmory"),
@@ -853,7 +853,7 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
             )
         elseif options.notify then
             -- Book closed: a small corner icon, not to distract
-            close_callback = self.dialog_manager:showSyncIndicator()
+            sync_indicator = self.dialog_manager:showSyncIndicator("upload")
         end
 
         local last_progress_step = 0
@@ -937,6 +937,11 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
                     update_progress_step(4 + math.floor((viewed_books / total_books) * 5))
                 end
 
+                if progress.state == "smart-check" and sync_indicator then
+                    -- Pushed; now fetching the next volumes
+                    sync_indicator:setDirection("download")
+                end
+
                 if progress.state == "progress-failed" then
                     progress_error_count = progress_error_count + 1
                 elseif progress.state == "progress-pushed" then
@@ -991,6 +996,10 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
 
         if close_callback then
             pcall(close_callback)
+        end
+
+        if sync_indicator then
+            sync_indicator:done(ok and progress_error_count == 0 and session_error_count == 0)
         end
 
         if not ok then
