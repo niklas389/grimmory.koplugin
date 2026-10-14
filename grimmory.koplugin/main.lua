@@ -451,10 +451,9 @@ function Grimmory:pullProgressForOpenBook()
     self.executor:background(
         function(run)
             -- Connecting WiFi and asking the server can take a while, so show
-            -- that something is happening (without blocking reading).
-            local close_notification = self.dialog_manager:notify(
-                _("Grimmory: checking reading progress…")
-            )
+            -- that something is happening (a small corner icon, not to
+            -- distract from reading).
+            local close_notification = self.dialog_manager:showSyncIndicator()
 
             local run_ok, ok, latest_progress = pcall(
                 run,
@@ -853,7 +852,8 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
                 _("Continue synchronization?")
             )
         elseif options.notify then
-            close_callback = self.dialog_manager:notify(_("Grimmory: synchronizing…"))
+            -- Book closed: a small corner icon, not to distract
+            close_callback = self.dialog_manager:showSyncIndicator()
         end
 
         local last_progress_step = 0

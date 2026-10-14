@@ -91,6 +91,89 @@ end
 ---@param text string
 ---@param timeout number | nil Seconds until it closes; `nil` keeps it until closed
 ---@return function close
+-- Small sync icon in the top right corner, shown while background syncs
+-- run (e.g. on book open / close): no text, and only its own small area
+-- is refreshed.  Shared by overlapping syncs.
+local sync_indicator = nil
+local sync_indicator_users = 0
+
+local function syncIndicatorWidget()
+    local Blitbuffer = require("ffi/blitbuffer")
+    local FrameContainer = require("ui/widget/container/framecontainer")
+    local Geom = require("ui/geometry")
+    local IconWidget = require("ui/widget/iconwidget")
+    local PluginMetadata = require("grimmory/plugin_metadata")
+    local WidgetContainer = require("ui/widget/container/widgetcontainer")
+
+    local icon_size = Screen:scaleBySize(22)
+    local padding = Screen:scaleBySize(4)
+    local margin = Screen:scaleBySize(6)
+
+    local frame = FrameContainer:new({
+        padding = padding,
+        margin = 0,
+        bordersize = Size.border.thin,
+        radius = Size.radius.default,
+        background = Blitbuffer.COLOR_WHITE,
+        IconWidget:new({
+            file = PluginMetadata.getPluginPath() .. "/icons/refresh.svg",
+            width = icon_size,
+            height = icon_size,
+            alpha = true,
+        }),
+    })
+    local size = frame:getSize()
+
+    -- In the file manager (e.g. after closing a book): left of its title
+    -- bar's right button, not over it
+    local right = margin
+    local ReaderUI = package.loaded["apps/reader/readerui"]
+    local FileManager = package.loaded["apps/filemanager/filemanager"]
+    local reader_open = ReaderUI and ReaderUI.instance
+    if not reader_open and FileManager and FileManager.instance and FileManager.instance.title_bar then
+        local button = FileManager.instance.title_bar.right_button
+        local ok, button_size = pcall(function() return button:getSize() end)
+        if ok and button_size then
+            right = button_size.w + margin
+        end
+    end
+
+    local widget = WidgetContainer:new({
+        dimen = Geom:new({ x = Screen:getWidth() - size.w - right, y = margin, w = size.w, h = size.h }),
+        -- Taps reach the book below
+        toast = true,
+        frame,
+    })
+    return widget
+end
+
+--- Show the corner sync icon until the returned function is called
+---@return function close
+function DialogManager:showSyncIndicator()
+    sync_indicator_users = sync_indicator_users + 1
+
+    if not sync_indicator then
+        sync_indicator = syncIndicatorWidget()
+        -- dimen places it (WidgetContainer paints at its x / y)
+        UIManager:show(sync_indicator, "fast", sync_indicator.dimen)
+    end
+
+    local closed = false
+    return function()
+        if closed then
+            return
+        end
+        closed = true
+        sync_indicator_users = sync_indicator_users - 1
+
+        if sync_indicator_users <= 0 and sync_indicator then
+            sync_indicator_users = 0
+            UIManager:close(sync_indicator, "ui", sync_indicator.dimen)
+            sync_indicator = nil
+        end
+    end
+end
+
 function DialogManager:notify(text, timeout)
     local message = InfoMessage:new({
         text = text,
