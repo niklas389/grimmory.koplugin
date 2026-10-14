@@ -91,6 +91,167 @@ end
 ---@param text string
 ---@param timeout number | nil Seconds until it closes; `nil` keeps it until closed
 ---@return function close
+-- Small cloud icon in the top right corner while background syncs run
+-- (e.g. on book open / close): no text, and only its own small area is
+-- refreshed.  Shared by overlapping syncs.  Icons: Material Symbols
+-- (Apache 2.0, see icons/LICENSE-material-symbols.txt).
+local SYNC_ICONS = {
+    upload = "cloud_upload",
+    download = "cloud_download",
+    sync = "cloud_sync",
+    done = "cloud_done",
+}
+-- How long "done" stays
+local SYNC_DONE_SECONDS = 1.5
+
+local indicator = nil      -- the widget, while shown
+local indicator_icon = nil -- the icon it shows
+local active_syncs = {}    -- handle -> "upload" | "download"
+local hide_indicator = nil -- scheduled after "done"
+
+local function indicatorFrame(icon_name)
+    local Blitbuffer = require("ffi/blitbuffer")
+    local FrameContainer = require("ui/widget/container/framecontainer")
+    local IconWidget = require("ui/widget/iconwidget")
+    local PluginMetadata = require("grimmory/plugin_metadata")
+
+    local icon_size = Screen:scaleBySize(26)
+
+    return FrameContainer:new({
+        padding = Screen:scaleBySize(2),
+        margin = 0,
+        bordersize = Size.border.thin,
+        radius = Size.radius.default,
+        background = Blitbuffer.COLOR_WHITE,
+        IconWidget:new({
+            file = PluginMetadata.getPluginPath() .. "/icons/" .. icon_name .. ".svg",
+            width = icon_size,
+            height = icon_size,
+            alpha = true,
+        }),
+    })
+end
+
+local function indicatorWidget(icon_name)
+    local Geom = require("ui/geometry")
+    local WidgetContainer = require("ui/widget/container/widgetcontainer")
+
+    local frame = indicatorFrame(icon_name)
+    local size = frame:getSize()
+    local margin = Screen:scaleBySize(6)
+
+    -- In the file manager (e.g. after closing a book): left of its title
+    -- bar's right button, not over it
+    local right = margin
+    local ReaderUI = package.loaded["apps/reader/readerui"]
+    local FileManager = package.loaded["apps/filemanager/filemanager"]
+    local reader_open = ReaderUI and ReaderUI.instance
+    if not reader_open and FileManager and FileManager.instance and FileManager.instance.title_bar then
+        local button = FileManager.instance.title_bar.right_button
+        local ok, button_size = pcall(function() return button:getSize() end)
+        if ok and button_size then
+            right = button_size.w + margin
+        end
+    end
+
+    return WidgetContainer:new({
+        -- dimen places it (WidgetContainer paints at its x / y)
+        dimen = Geom:new({ x = Screen:getWidth() - size.w - right, y = margin, w = size.w, h = size.h }),
+        -- Taps reach the book below
+        toast = true,
+        frame,
+    })
+end
+
+local function closeIndicator()
+    if hide_indicator then
+        UIManager:unschedule(hide_indicator)
+        hide_indicator = nil
+    end
+    if indicator then
+        UIManager:close(indicator, "ui", indicator.dimen)
+        indicator = nil
+        indicator_icon = nil
+    end
+end
+
+local function showIndicatorIcon(icon_name)
+    if indicator and indicator_icon == icon_name then
+        return
+    end
+
+    if indicator then
+        -- Same size and place: swap the icon, refresh only the icon
+        indicator[1] = indicatorFrame(icon_name)
+        UIManager:setDirty(indicator, "fast", indicator.dimen)
+    else
+        indicator = indicatorWidget(icon_name)
+        UIManager:show(indicator, "fast", indicator.dimen)
+    end
+    indicator_icon = icon_name
+end
+
+--- The icon for the running syncs: their direction, or "sync" for both
+local function updateIndicator()
+    local direction = nil
+    for _, sync_direction in pairs(active_syncs) do
+        if direction == nil then
+            direction = sync_direction
+        elseif direction ~= sync_direction then
+            direction = "sync"
+        end
+    end
+
+    if direction then
+        if hide_indicator then
+            UIManager:unschedule(hide_indicator)
+            hide_indicator = nil
+        end
+        showIndicatorIcon(SYNC_ICONS[direction] or SYNC_ICONS.sync)
+    end
+end
+
+--- Show the corner sync icon for a background sync.
+---@param direction "upload" | "download" Pushing or pulling
+---@return table handle :setDirection(direction) while running; :done(success) at the end
+function DialogManager:showSyncIndicator(direction)
+    local handle = {}
+
+    function handle.setDirection(_, new_direction)
+        if active_syncs[handle] then
+            active_syncs[handle] = new_direction
+            updateIndicator()
+        end
+    end
+
+    function handle.done(_, success)
+        if not active_syncs[handle] then
+            return
+        end
+        active_syncs[handle] = nil
+
+        if next(active_syncs) ~= nil then
+            -- Others still run
+            updateIndicator()
+        elseif success then
+            showIndicatorIcon(SYNC_ICONS.done)
+            hide_indicator = function()
+                hide_indicator = nil
+                closeIndicator()
+            end
+            UIManager:scheduleIn(SYNC_DONE_SECONDS, hide_indicator)
+        else
+            -- The error is shown as a notice
+            closeIndicator()
+        end
+    end
+
+    active_syncs[handle] = direction
+    updateIndicator()
+
+    return handle
+end
+
 function DialogManager:notify(text, timeout)
     local message = InfoMessage:new({
         text = text,

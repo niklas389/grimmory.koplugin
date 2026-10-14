@@ -107,4 +107,8 @@ to the latest release.
 
 Distributed under the terms of the [AGPL-3.0 License](./LICENSE).
 
+The cloud icons (`icons/cloud_*.svg`) are
+[Material Symbols](https://github.com/google/material-design-icons) by Google,
+under the [Apache License 2.0](./grimmory.koplugin/icons/LICENSE-material-symbols.txt).
+
 [latest-plugin]: https://github.com/niklas389/grimmory.koplugin/releases/latest/download/grimmory.koplugin.zip

@@ -1304,8 +1304,9 @@ end
 function GrimmorySynchronize:synchronizeBookProgress(book_path, callback, smart)
     self:pushBookProgressAndSessions(book_path, callback)
 
-    if smart then
+    if smart and self.settings:getSmartDownloadMode() ~= "off" then
         -- After the push, so the server knows how far the book was read
+        callback({ state = "smart-check" })
         local ok, smart_error = pcall(self.smartDownloadForBook, self, book_path, callback)
         if not ok then
             logger:err("Smart download failed:", smart_error)
