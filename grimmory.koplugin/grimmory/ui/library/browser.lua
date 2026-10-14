@@ -18,6 +18,7 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan = require("ui/widget/horizontalspan")
+local IconWidget = require("ui/widget/iconwidget")
 local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local InputDialog = require("ui/widget/inputdialog")
@@ -158,22 +159,33 @@ function LibraryBrowser:close()
     UIManager:close(self)
 end
 
---- Small "Loading…" notification while requests run (they block the UI);
---- closed when the screen is shown.
+--- While requests run (they block the UI) the header's refresh icon turns
+--- into an hourglass.  Only the icon's area is refreshed, which is cheaper
+--- on e-ink than a notice opening and closing; the next screen replaces it.
 function LibraryBrowser:showLoadingIndicator()
-    if self.close_loading_indicator then
+    local area = self.refresh_icon_area
+    if self.loading_shown or not area then
         return
     end
+    self.loading_shown = true
 
-    self.close_loading_indicator = self.dialog_manager:notify(_("Loading…"))
+    local icon = IconWidget:new({
+        file = Widgets.pluginIcon("loading"),
+        width = area.w,
+        height = area.h,
+        alpha = true,
+    })
+    Screen.bb:paintRect(area.x, area.y, area.w, area.h, Blitbuffer.COLOR_WHITE)
+    icon:paintTo(Screen.bb, area.x, area.y)
+    icon:free()
+
+    UIManager:setDirty(nil, "fast", area)
     UIManager:forceRePaint()
 end
 
 function LibraryBrowser:hideLoadingIndicator()
-    if self.close_loading_indicator then
-        self.close_loading_indicator()
-        self.close_loading_indicator = nil
-    end
+    -- The screen shown next is painted over it
+    self.loading_shown = false
 end
 
 -------------------------------------------------------------------------------
@@ -279,7 +291,7 @@ function LibraryBrowser:getBookGrid(content_h)
         local cols = math.max(3, math.min(6, math.floor(self.width / Screen:scaleByDPI(185))))
         local cell_w = math.floor(self.width / cols)
         local title_h = Widgets.linesHeight(Widgets.faces.small, 2)
-        local cell_h = math.floor((cell_w - 2 * padding) * 3 / 2 + title_h + 4 * padding + Screen:scaleBySize(7))
+        local cell_h = Widgets.coverHeight(cell_w - 2 * padding) + title_h + 4 * padding + Screen:scaleBySize(7)
         -- Round, and let the covers shrink a little to fill the height
         local rows = math.max(1, math.floor(content_h / cell_h + 0.5))
         return { rows = rows, cols = cols, cell_w = cell_w, cell_h = math.floor(content_h / rows) }
@@ -535,7 +547,7 @@ function LibraryBrowser:headerIcons(screen)
     local icons = {}
 
     if screen.type ~= "details" then
-        table.insert(icons, Widgets.iconButton("appbar.search", function()
+        table.insert(icons, Widgets.fileIconButton("search", function()
             self:showSearch(screen)
         end))
     end
@@ -547,9 +559,16 @@ function LibraryBrowser:headerIcons(screen)
         end))
     end
 
-    table.insert(icons, Widgets.fileIconButton("refresh", function()
-        self:refresh()
-    end))
+    -- Where it is painted is where the loading indicator goes (the same
+    -- place on every screen: it is right aligned, before "close")
+    table.insert(icons, Widgets.PaintTracker:new({
+        Widgets.fileIconButton("refresh", function()
+            self:refresh()
+        end),
+        on_paint = function(area)
+            self.refresh_icon_area = area
+        end,
+    }))
 
     table.insert(icons, Widgets.iconButton("close", function()
         self:close()
@@ -559,7 +578,7 @@ function LibraryBrowser:headerIcons(screen)
 end
 
 --- Rebuild the whole screen for the current state.  Loads what is missing
---- (showing "Loading…" meanwhile) and then shows it.
+--- (showing the loading indicator meanwhile) and then shows it.
 function LibraryBrowser:show()
     self:cancelCovers()
 
@@ -723,7 +742,7 @@ function LibraryBrowser:pagedContent(screen, content_h)
         local waiting = false
         local answer = nil
 
-        -- A cached page answers synchronously (no "Loading…" flash); a
+        -- A cached page answers synchronously (no loading indicator); a
         -- network answer arrives later and shows the screen again.
         screen.load(requested_page - 1, size, function(ok, result)
             if not waiting then
@@ -891,7 +910,7 @@ function LibraryBrowser:homeContent(screen, content_h)
     local title_h = Widgets.linesHeight(Widgets.faces.small, 2)
     local cell_h = math.floor(content_h / max_sections) - section_header_h
     local cover_h = cell_h - title_h - 4 * padding - Screen:scaleBySize(5)
-    local cell_w = math.floor(cover_h * 2 / 3) + 2 * padding
+    local cell_w = Widgets.coverWidth(cover_h) + 2 * padding
     local cols = math.max(3, math.floor(self.width / cell_w))
     cell_w = math.floor(self.width / cols)
 
@@ -1238,7 +1257,7 @@ function LibraryBrowser:detailsContent(screen, content_h)
     end
 
     local cover_w = math.floor(width * 0.38)
-    local cover_h = math.floor(cover_w * 3 / 2)
+    local cover_h = Widgets.coverHeight(cover_w)
     local cover = Widgets.CoverSlot:new({
         width = cover_w,
         height = cover_h,
