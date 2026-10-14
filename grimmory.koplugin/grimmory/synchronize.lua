@@ -166,7 +166,9 @@ end
 
 ---@param book_path string
 ---@param book_grimmory_id integer
+---@return { sent: integer, deleted: integer } counts
 function GrimmorySynchronize:pushBookAnnotations(book_path, book_grimmory_id)
+    local counts = { sent = 0, deleted = 0 }
     local local_annotations = self.reading_annotations:getAnnotations(book_path)
 
     local modified_grimmory_annotations = self.doc_metadata:getModifiedGrimmoryAnnotations(book_path)
@@ -184,6 +186,7 @@ function GrimmorySynchronize:pushBookAnnotations(book_path, book_grimmory_id)
         -- Once this bug (grimmory-tools/grimmory#1858) is fixed we can add the check
         -- back in for the `ok` of `deleteAnnotation` calls.
         self.doc_metadata:removeModifiedGrimmoryAnnotation(book_path, modified_id)
+        counts.deleted = counts.deleted + 1
     end
 
     ---@type { [integer]: integer }
@@ -211,6 +214,7 @@ function GrimmorySynchronize:pushBookAnnotations(book_path, book_grimmory_id)
 
             if create_ok then
                 logger:dbg("Created annotation for book:", book_path)
+                counts.sent = counts.sent + 1
 
                 local remote_id = type(remote_annotation) == "table" and tonumber(remote_annotation.id) or nil
                 if remote_id and annotation.local_index then
@@ -236,10 +240,13 @@ function GrimmorySynchronize:pushBookAnnotations(book_path, book_grimmory_id)
 
         self.doc_metadata:setAnnotations(book_path, doc_annotations)
     end
+
+    return counts
 end
 
 ---@param book_path string
 ---@param book_grimmory_id integer
+---@return { added: integer, updated: integer, removed: integer } | nil counts
 function GrimmorySynchronize:pullBookAnnotations(book_path, book_grimmory_id)
     local annotations_ok, annotations = self.api:getAnnotations(book_grimmory_id)
 
@@ -250,7 +257,7 @@ function GrimmorySynchronize:pullBookAnnotations(book_path, book_grimmory_id)
 
     logger:dbg("Writing annotations to:", book_path)
 
-    self.reading_annotations:applyAnnotations(
+    return self.reading_annotations:applyAnnotations(
         book_path,
         annotations
     )
@@ -529,9 +536,10 @@ function GrimmorySynchronize:removeEmptyShelves(callback)
     ReadCollection:write()
 end
 
+---@return number | nil percent The position taken over from Grimmory, if any
 function GrimmorySynchronize:pullBookProgress(book_path)
     if not self.settings:getSyncReadingProgress() then
-        return
+        return nil
     end
 
     local ui = self.reading_progress_manager.ui
@@ -540,7 +548,7 @@ function GrimmorySynchronize:pullBookProgress(book_path)
         -- document has no effect.  The open book is handled in the
         -- foreground by the "Go to latest location" confirmation.
         logger:dbg("Skipping progress pull for open book:", book_path)
-        return
+        return nil
     end
 
     -- Only adopt remote progress when it is newer than what was recorded
@@ -550,7 +558,10 @@ function GrimmorySynchronize:pullBookProgress(book_path)
 
     if progress then
         self.reading_progress_manager:applyProgress(progress)
+        return tonumber(progress.end_progress) or 0
     end
+
+    return nil
 end
 
 function GrimmorySynchronize:downloadBook(book_id, download_path, on_progress, size_kb)
@@ -716,7 +727,7 @@ function GrimmorySynchronize:refreshBook(book_path, book_id, grimmory_id)
         -- Things were completely the same so we can delete the temp file
         logger:info("File is identical with Grimmory:", book_path, "-", temp_md5)
         util.removeFile(temp_path)
-        return true, book_id
+        return true, book_id, false
     end
 
     local temp_partial_md5 = util.partialMD5(temp_path)
@@ -773,7 +784,7 @@ function GrimmorySynchronize:refreshBook(book_path, book_id, grimmory_id)
     util.removeFile(backup_path)
     util.removeFile(temp_path)
 
-    return true, book_id
+    return true, book_id, true
 end
 
 ---@param book Book
@@ -1289,12 +1300,16 @@ function GrimmorySynchronize:synchronizeBook(book_path, refresh_book, callback)
         error("Could not track book")
     end
 
+    -- What happened, for the summary shown afterwards
+    local result = { linked = grimmory_id ~= nil }
+
     if refresh_book then
         if not grimmory_id then
             error("Book not associated to Grimmory")
         end
 
-        local refresh_ok, refreshed_book_id = self:refreshBook(book_path, book_id, grimmory_id)
+        local refresh_ok, refreshed_book_id, replaced = self:refreshBook(book_path, book_id, grimmory_id)
+        result.file_replaced = replaced == true
 
         if not refresh_ok or not refreshed_book_id then
             logger:err("Could not refresh book:", book_path, refreshed_book_id)
@@ -1309,6 +1324,8 @@ function GrimmorySynchronize:synchronizeBook(book_path, refresh_book, callback)
         grimmory_id = self:associateBook(book_path)
         if grimmory_id ~= nil then
             logger:info("Found book in Grimmory:", book_path)
+            result.linked = true
+            result.newly_linked = true
         else
             logger:warn("Unable to locate book in Grimmory:", book_path)
         end
@@ -1319,15 +1336,21 @@ function GrimmorySynchronize:synchronizeBook(book_path, refresh_book, callback)
         -- Annotation errors (e.g. a position that cannot be converted to a
         -- CFI) must not prevent progress and sessions from being pushed.
         logger:info("Pushing book annotations:", book_path)
-        local push_ok, push_error = pcall(self.pushBookAnnotations, self, book_path, grimmory_id)
-        if not push_ok then
-            logger:err("Failed pushing annotations:", book_path, "-", push_error)
+        local push_ok, pushed = pcall(self.pushBookAnnotations, self, book_path, grimmory_id)
+        if push_ok then
+            result.annotations_pushed = pushed
+        else
+            logger:err("Failed pushing annotations:", book_path, "-", pushed)
+            result.annotations_failed = true
         end
 
         logger:info("Pulling book annotations:", book_path)
-        local pull_ok, pull_error = pcall(self.pullBookAnnotations, self, book_path, grimmory_id)
-        if not pull_ok then
-            logger:err("Failed pulling annotations:", book_path, "-", pull_error)
+        local pull_ok, pulled = pcall(self.pullBookAnnotations, self, book_path, grimmory_id)
+        if pull_ok and pulled then
+            result.annotations_pulled = pulled
+        elseif not pull_ok then
+            logger:err("Failed pulling annotations:", book_path, "-", pulled)
+            result.annotations_failed = true
         end
     elseif grimmory_id then
         logger:info("Annotation sync skipped because feature is disabled:", book_path)
@@ -1345,7 +1368,9 @@ function GrimmorySynchronize:synchronizeBook(book_path, refresh_book, callback)
     })
 
     -- Then, try to get progress
-    self:pullBookProgress(book_path)
+    result.progress_pulled = self:pullBookProgress(book_path)
+
+    callback({ state = "book-sync-result", result = result })
 
     logger:info("Done synchronizing book:", book_path)
 end

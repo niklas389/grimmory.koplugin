@@ -4,6 +4,8 @@ Grimmory KOReader Plugin
 @module koplugin.Grimmory
 --]]--
 local _ = require("gettext")
+local N_ = _.ngettext
+local util = require("util")
 local T = require("ffi/util").template
 
 local Dispatcher = require("dispatcher")
@@ -678,6 +680,88 @@ end
 
 ---@param verbose boolean
 ---@param book_path string|nil Only synchronize this book
+--- Summary of a one book sync / reload from Grimmory
+---@param result table From the "book-sync-result" progress event
+function Grimmory:describeBookSync(book_path, refresh_book, result, counts)
+    local title = self.doc_metadata:getTitle(book_path)
+    if not title or title == "" then
+        title = select(2, util.splitFilePathName(book_path))
+    end
+
+    local lines = {
+        refresh_book and T(_("Reloaded “%1” from Grimmory"), title) or T(_("Synced “%1” with Grimmory"), title),
+    }
+
+    local function add(text)
+        table.insert(lines, "• " .. text)
+    end
+
+    if not result.linked then
+        add(_("Not found in Grimmory: only kept locally"))
+        return table.concat(lines, "\n")
+    end
+
+    if result.newly_linked then
+        add(_("Linked to the book in Grimmory"))
+    end
+
+    if refresh_book then
+        if result.file_replaced then
+            add(_("File replaced with the version from Grimmory"))
+        else
+            add(_("File is already the same as in Grimmory"))
+        end
+    end
+
+    if counts.progress_pushed then
+        add(_("Reading position sent"))
+    end
+    if counts.progress_error_count > 0 then
+        add(_("Reading position not accepted by the server"))
+    end
+    if result.progress_pulled then
+        add(T(_("Reading position from Grimmory: %1 %"), math.floor(result.progress_pulled + 0.5)))
+    end
+
+    if counts.session_count > 0 then
+        add(T(N_("1 reading session sent", "%1 reading sessions sent", counts.session_count), counts.session_count))
+    end
+    if counts.session_error_count > 0 then
+        add(_("Reading sessions not accepted by the server"))
+    end
+
+    local pushed = result.annotations_pushed or {}
+    local pulled = result.annotations_pulled or {}
+    local annotation_parts = {}
+    if (pushed.sent or 0) > 0 then
+        table.insert(annotation_parts, T(_("%1 sent"), pushed.sent))
+    end
+    if (pushed.deleted or 0) > 0 then
+        table.insert(annotation_parts, T(_("%1 deleted in Grimmory"), pushed.deleted))
+    end
+    if (pulled.added or 0) > 0 then
+        table.insert(annotation_parts, T(_("%1 received"), pulled.added))
+    end
+    if (pulled.updated or 0) > 0 then
+        table.insert(annotation_parts, T(_("%1 updated"), pulled.updated))
+    end
+    if (pulled.removed or 0) > 0 then
+        table.insert(annotation_parts, T(_("%1 removed"), pulled.removed))
+    end
+    if #annotation_parts > 0 then
+        add(T(_("Highlights and notes: %1"), table.concat(annotation_parts, ", ")))
+    end
+    if result.annotations_failed then
+        add(_("Highlights and notes could not be fully synced"))
+    end
+
+    if #lines == 1 then
+        add(_("Everything was already up to date"))
+    end
+
+    return table.concat(lines, "\n")
+end
+
 ---@param refresh_book boolean|nil
 ---@param options table|nil { allow_enable_wifi, notify, progress_only, smart }
 ---  allow_enable_wifi: set to false to never turn on WiFi for this sync.
@@ -760,6 +844,8 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
         local book_error_count = 0
         local progress_error_count = 0
         local smart_titles = {}
+        local progress_pushed = false
+        local book_result = nil
 
         local update_progress_step = function(progress_step)
             if progress_step <= last_progress_step then
@@ -832,6 +918,10 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
 
                 if progress.state == "progress-failed" then
                     progress_error_count = progress_error_count + 1
+                elseif progress.state == "progress-pushed" then
+                    progress_pushed = true
+                elseif progress.state == "book-sync-result" and type(progress.result) == "table" then
+                    book_result = progress.result
                 end
 
                 if progress.state == "smart-download" then
@@ -957,7 +1047,15 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
             self:refreshUI()
         end
 
-        if verbose then
+        if verbose and book_path and book_result then
+            -- One book (file context menu): say what happened to it
+            self.dialog_manager:toast(self:describeBookSync(book_path, refresh_book, book_result, {
+                progress_pushed = progress_pushed,
+                session_count = session_count,
+                session_error_count = session_error_count,
+                progress_error_count = progress_error_count,
+            }), 6)
+        elseif verbose then
             local message = {
                 _("Completed Grimmory sync")
             }
