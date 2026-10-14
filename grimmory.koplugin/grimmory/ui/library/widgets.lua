@@ -669,7 +669,11 @@ end
 function Widgets.header(opts)
     local width = opts.width
     local padding = Widgets.PADDING
-    local height = Widgets.ICON_SIZE + 2 * padding
+    local title_face_h = TextWidget:new({ text = "Mg", face = Widgets.faces.header, bold = true }):getSize().h
+    local subtitle_face_h = TextWidget:new({ text = "Mg", face = Widgets.faces.small }):getSize().h
+    -- Always room for a title and a subtitle line, so the header has the
+    -- same height on every screen
+    local height = math.max(Widgets.ICON_SIZE, title_face_h + subtitle_face_h) + 2 * padding
 
     local left = HorizontalGroup:new({ align = "center", HorizontalSpan:new({ width = padding }) })
     if opts.on_back then
@@ -700,7 +704,6 @@ function Widgets.header(opts)
             max_width = title_w,
             fgcolor = Blitbuffer.COLOR_DARK_GRAY,
         }))
-        height = math.max(height, title:getSize().h + 2 * padding)
     end
     table.insert(left, title)
     -- Children were added after measuring: drop the cached layout
