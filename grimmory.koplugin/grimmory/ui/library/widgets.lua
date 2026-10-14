@@ -56,6 +56,17 @@ Widgets.faces = {
 Widgets.PADDING = Screen:scaleBySize(8)
 Widgets.ICON_SIZE = Screen:scaleBySize(34)
 
+-- Height / width of cover slots: Grimmory crops its thumbnails to 250 x 350
+Widgets.COVER_RATIO = 7 / 5
+
+function Widgets.coverHeight(width)
+    return math.floor(width * Widgets.COVER_RATIO)
+end
+
+function Widgets.coverWidth(height)
+    return math.floor(height / Widgets.COVER_RATIO)
+end
+
 function Widgets.pluginIcon(name)
     return PluginMetadata.getPluginPath() .. "/icons/" .. name .. ".svg"
 end
@@ -187,18 +198,36 @@ function CoverSlot:update()
     local border = Size.border.thin
     local path = self:getCoverPath()
     local content
+    -- Size of the framed cover (smaller than the slot for covers of another shape)
+    local cover_w, cover_h = self.width, self.height
 
     if path and Covers.exists(path) then
+        local fitted = ImageWidget:new({
+            file = path,
+            width = self.width - 2 * border,
+            height = self.height - 2 * border,
+            scale_factor = 0, -- fit, keeping the aspect ratio
+        })
+        -- The frame hugs the image, so there are no blank bands in it.
+        -- getSize() renders it but answers the box size, and the image
+        -- would be centered in that box: make it again at the fitted size
+        -- (the decoded image is cached).
+        fitted:getSize()
+        local image_w, image_h = fitted:getCurrentWidth(), fitted:getCurrentHeight()
+        fitted:free()
+        local image = ImageWidget:new({
+            file = path,
+            width = image_w,
+            height = image_h,
+            scale_factor = 0,
+        })
+        cover_w = image_w + 2 * border
+        cover_h = image_h + 2 * border
         content = FrameContainer:new({
             padding = 0,
             margin = 0,
             bordersize = border,
-            ImageWidget:new({
-                file = path,
-                width = self.width - 2 * border,
-                height = self.height - 2 * border,
-                scale_factor = 0, -- fit, keeping the aspect ratio
-            }),
+            image,
         })
     else
         local inner_w = self.width - 2 * border
@@ -229,19 +258,32 @@ function CoverSlot:update()
     }
 
     if self.on_device then
-        -- Small "on this device" badge in the bottom right corner
-        local badge_size = math.floor(math.min(self.width, self.height) / 4.5)
+        -- "On this device" corner badge, top right, in the style of
+        -- SimpleUI's cover badges: small rounded rectangle, thin border
+        local cover_min = math.min(cover_w, cover_h)
+        local icon_size = math.max(8, math.floor(cover_min * 0.17))
+        local pad = math.max(1, math.floor(icon_size * 0.15))
+        local badge_border = Size.border.thin
+        local badge_w = icon_size + 2 * pad + 2 * badge_border
         local badge = FrameContainer:new({
-            padding = 0,
+            padding = pad,
             margin = 0,
-            bordersize = Size.border.thin,
-            radius = math.floor(badge_size / 2),
+            bordersize = badge_border,
+            radius = math.max(1, math.floor(badge_w * 0.12)),
             background = Blitbuffer.COLOR_WHITE,
-            IconWidget:new({ icon = "check", width = badge_size, height = badge_size }),
+            IconWidget:new({
+                file = Widgets.pluginIcon("downloaded"),
+                width = icon_size,
+                height = icon_size,
+                alpha = true,
+            }),
         })
+        -- Inside the cover (centered in the slot), inset from its corner
+        local cover_x = math.floor((self.width - cover_w) / 2)
+        local cover_y = math.floor((self.height - cover_h) / 2)
         badge.overlap_offset = {
-            self.width - badge_size - Size.border.thin * 2 - Widgets.PADDING / 2,
-            self.height - badge_size - Size.border.thin * 2 - Widgets.PADDING / 2,
+            cover_x + cover_w - badge_w - math.max(1, math.floor(cover_min * 0.06)),
+            cover_y + math.max(1, math.floor(cover_min * 0.04)),
         }
         table.insert(children, badge)
     end
@@ -270,6 +312,9 @@ function PaintTracker:paintTo(bb, x, y)
     local size = self[1]:getSize()
     self.painted_at = Geom:new({ x = x, y = y, w = size.w, h = size.h })
     self[1]:paintTo(bb, x, y)
+    if self.on_paint then
+        self.on_paint(self.painted_at)
+    end
 end
 
 function PaintTracker:getSize()
@@ -312,7 +357,7 @@ function Widgets.bookListItem(book, opts)
     local width, height = opts.width, opts.height
     local padding = Widgets.PADDING
     local cover_h = height - 2 * padding
-    local cover_w = math.floor(cover_h * 2 / 3)
+    local cover_w = Widgets.coverWidth(cover_h)
     local text_w = width - cover_w - 4 * padding
 
     local cover = CoverSlot:new({
@@ -425,8 +470,8 @@ function Widgets.bookGridCell(book, opts)
     local padding = Widgets.PADDING
     local cover_w = width - 2 * padding
     local title_h = Widgets.linesHeight(Widgets.faces.small, opts.title_lines)
-    local cover_h = math.min(math.floor(cover_w * 3 / 2), height - title_h - 3 * padding - Screen:scaleBySize(7))
-    cover_w = math.min(cover_w, math.floor(cover_h * 2 / 3))
+    local cover_h = math.min(Widgets.coverHeight(cover_w), height - title_h - 3 * padding - Screen:scaleBySize(7))
+    cover_w = math.min(cover_w, Widgets.coverWidth(cover_h))
 
     local cover = CoverSlot:new({
         width = cover_w,
@@ -493,8 +538,8 @@ function Widgets.collectionGridCell(opts)
     local title_h = Widgets.linesHeight(Widgets.faces.small, 2)
     local subtitle_h = Widgets.linesHeight(Widgets.faces.small, 1)
     local cover_w = width - 2 * padding
-    local cover_h = math.min(math.floor(cover_w * 3 / 2), height - title_h - subtitle_h - 3 * padding)
-    cover_w = math.min(cover_w, math.floor(cover_h * 2 / 3))
+    local cover_h = math.min(Widgets.coverHeight(cover_w), height - title_h - subtitle_h - 3 * padding)
+    cover_w = math.min(cover_w, Widgets.coverWidth(cover_h))
 
     local cover = CoverSlot:new({
         width = cover_w,
@@ -551,7 +596,7 @@ function Widgets.collectionRow(opts)
     if opts.cover then
         local cover_h = height - 2 * padding
         cover = CoverSlot:new({
-            width = math.floor(cover_h * 2 / 3),
+            width = Widgets.coverWidth(cover_h),
             height = cover_h,
             book_id = opts.cover.book_id,
             cover_updated_on = opts.cover.cover_updated_on,
