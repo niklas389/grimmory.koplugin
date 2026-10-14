@@ -46,7 +46,8 @@ Grimmory version with the app API (`/api/v1/app`).
 
 ## Menu
 
-- **What to Sync**: reading progress, sessions, annotations, shelves
+- **What to Sync**: reading progress, sessions, annotations, book information,
+  shelves
 - **When to Sync**: opening / closing a book, wake, suspend, power off,
   periodically
 - **Downloads**: download sources (everything, or chosen shelves, libraries,
@@ -54,6 +55,21 @@ Grimmory version with the app API (`/api/v1/app`).
   deleting removed books
 - **Library Browser**: cover grid or list, clearing the browser's cache
 - **Network**: turning WiFi on when needed
+
+## Book information from Grimmory
+
+Title, authors, series and number, language, tags (Grimmory's categories and
+tags) and the description are taken from Grimmory and shown in KOReader
+instead of what the file says, e.g. for comics without metadata or books with
+wrong metadata.  They are written as the book's custom metadata, as when
+editing them in KOReader's **Book information** (marked with a pencil there,
+and each can be reset there).  Grimmory's values win: edit metadata in
+Grimmory.
+
+Every sync updates the books on the device; "Sync with Grimmory" and "Reload
+from Grimmory" in a book's menu also update the description (Grimmory's book
+lists do not include it) and say what changed.  Turn it off under **What to
+Sync** -> **Book Information**.
 
 ## Smart download for series
 

@@ -162,8 +162,23 @@ end
 ---@param remote_annotations table[]
 ---@param unresolved_grimmory_ids? { [string]: boolean } remote annotations that exist
 ---       but could not be converted; local copies are kept untouched
+-- Fields taken over from Grimmory; a difference in one counts as a change
+local SYNCED_FIELDS = { "pos0", "pos1", "color", "drawer", "chapter", "text", "note" }
+
+local function differs(a, b)
+    for _, field in ipairs(SYNCED_FIELDS) do
+        if a[field] ~= b[field] then
+            return true
+        end
+    end
+    return false
+end
+
+---@return table[] annotations
+---@return { added: integer, updated: integer, removed: integer } counts
 local function merge_annotations(local_annotations, remote_annotations, unresolved_grimmory_ids)
     unresolved_grimmory_ids = unresolved_grimmory_ids or {}
+    local counts = { added = 0, updated = 0, removed = 0 }
 
     local remote_grimmory_ids = {}
     for _, a in ipairs(remote_annotations) do
@@ -188,6 +203,8 @@ local function merge_annotations(local_annotations, remote_annotations, unresolv
             unresolved_grimmory_ids[tostring(a.grimmory_id)]
         ) then
             table.insert(new_annotations, a)
+        else
+            counts.removed = counts.removed + 1
         end
     end
 
@@ -203,6 +220,9 @@ local function merge_annotations(local_annotations, remote_annotations, unresolv
                     is_same_xpointer(existing_annotation.pos1, annotation.pos1)
                 ) then
                     found_annotation = true
+                    if differs(existing_annotation, annotation) then
+                        counts.updated = counts.updated + 1
+                    end
 
                     -- Just apply, don't think too hard about it.
                     existing_annotation.grimmory_id = annotation.grimmory_id
@@ -220,10 +240,14 @@ local function merge_annotations(local_annotations, remote_annotations, unresolv
             if not found_annotation then
                 -- This is a new annotation and can be added to the table
                 table.insert(new_annotations, annotation)
+                counts.added = counts.added + 1
             end
         else
             -- Apply to matching grimmory ID
             local existing_annotation = local_grimmory_ids[grimmory_id]
+            if differs(existing_annotation, annotation) then
+                counts.updated = counts.updated + 1
+            end
 
             existing_annotation.pos0 = annotation.pos0
             existing_annotation.pos1 = annotation.pos1
@@ -243,11 +267,12 @@ local function merge_annotations(local_annotations, remote_annotations, unresolv
     -- and delete the older ones
     -- For imperfect overlap, combine and prioritize the later ones.
 
-    return new_annotations
+    return new_annotations, counts
 end
 
 ---@param book_path string
 ---@param annotations GrimmoryAnnotation[]
+---@return { added: integer, updated: integer, removed: integer } | nil counts Local changes, nil if not applied
 function GrimmoryReadingAnnotations:applyAnnotations(book_path, grimmory_annotations)
     local remote_annotations = {}
     local unresolved_grimmory_ids = {}
@@ -304,14 +329,16 @@ function GrimmoryReadingAnnotations:applyAnnotations(book_path, grimmory_annotat
         -- Without a resolver nothing could be converted.  Merging an empty
         -- remote list would delete every synced local annotation.
         logger:warn("Not applying annotations, document could not be resolved:", book_path)
-        return
+        return nil
     end
 
     local local_annotations = self.doc_metadata:getAnnotations(book_path)
 
-    local new_annotations = merge_annotations(local_annotations, remote_annotations, unresolved_grimmory_ids)
+    local new_annotations, counts = merge_annotations(local_annotations, remote_annotations, unresolved_grimmory_ids)
 
     self.doc_metadata:setAnnotations(book_path, new_annotations)
+
+    return counts
 end
 
 ---@return GrimmoryAnnotation[] annotations

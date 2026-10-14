@@ -150,6 +150,45 @@ describe("GrimmoryReadingAnnotations", function()
         end)
     end)
 
+    describe("counts", function()
+        it("reports received, updated and removed annotations", function()
+            local outdated = {}
+            for key, value in pairs(local_grimmory_annotation) do
+                outdated[key] = value
+            end
+            outdated.text = "An older text"
+
+            local gone = { grimmory_id = 99, pos0 = "a", pos1 = "b", text = "deleted in Grimmory" }
+
+            fake_doc_metadata.getAnnotations.returns({ local_annotation, outdated, gone })
+
+            local annotations = GrimmoryReadingAnnotations:new(fake_doc_metadata)
+
+            local counts = annotations:applyAnnotations("book_path", {
+                remote_grimmory_annotation,
+                {
+                    id = 28,
+                    cfi = "epubcfi(/6/4!/4/4,/1:0,/1:5)",
+                    color = "#FFC107",
+                    style = "highlight",
+                    text = "new in Grimmory",
+                },
+            })
+
+            assert.are.same({ added = 1, updated = 1, removed = 1 }, counts)
+        end)
+
+        it("reports nothing when everything is the same", function()
+            fake_doc_metadata.getAnnotations.returns({ local_grimmory_annotation })
+
+            local annotations = GrimmoryReadingAnnotations:new(fake_doc_metadata)
+
+            local counts = annotations:applyAnnotations("book_path", { remote_grimmory_annotation })
+
+            assert.are.same({ added = 0, updated = 0, removed = 0 }, counts)
+        end)
+    end)
+
     describe("getAnnotations", function()
         it("translates colors and styles for local annotations", function()
             fake_doc_metadata.getAnnotations.returns({ local_annotation })
