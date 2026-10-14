@@ -161,6 +161,12 @@ end
 ---@param use_pocketbook_netagent boolean
 ---@return function|nil start Starts connecting without blocking the UI
 local function get_background_connect(use_pocketbook_netagent)
+    if NetworkManager.turn_on_wifi_async then
+        -- A KOReader patch already turns WiFi on in the background
+        -- (2-pocketbook-background-wifi.lua): use the regular way
+        return nil
+    end
+
     if Device:hasWifiRestore() then
         -- Same as KOReader restoring WiFi after resume (Kobo, Kindle, ...)
         return function() NetworkManager:restoreWifiAsync() end
@@ -296,7 +302,9 @@ local function connect_wifi(use_pocketbook_netagent)
     -- PocketBook's NetConnect is synchronous: when it returns without a link,
     -- the attempt failed (it sometimes does, e.g. right after wake-up), so
     -- it is worth a second try.  Elsewhere the result is only known later.
-    local attempts = Device:isPocketBook() and 2 or 1
+    -- (Unless a patch made it asynchronous, see turn_on_wifi_async below.)
+    local pocketbook_sync_connect = Device:isPocketBook() and not NetworkManager.turn_on_wifi_async
+    local attempts = pocketbook_sync_connect and 2 or 1
 
     for attempt = 1, attempts do
         -- Turning WiFi on below blocks the UI (scanning, PocketBook's
@@ -312,7 +320,7 @@ local function connect_wifi(use_pocketbook_netagent)
         if result == false then
             -- `enableWifi` has already torn the attempt down.
             logger:err("Failed to turn on wifi, attempt", attempt)
-        elseif Device:isPocketBook() and not NetworkManager:isWifiOn() then
+        elseif pocketbook_sync_connect and not NetworkManager:isWifiOn() then
             logger:err("PocketBook NetConnect failed, attempt", attempt)
             -- Stop KOReader's pending connectivity check, otherwise the next
             -- attempt is rejected as busy for the next 45 seconds.
