@@ -56,6 +56,7 @@ local logger = GrimmoryLogger:new()
 ---@field sync_reading_sessions boolean
 ---@field sync_reading_progress boolean
 ---@field sync_annotations boolean
+---@field sync_book_info boolean Show Grimmory's title, authors, series, ... in KOReader
 ---@field sync_shelves_as_collections boolean
 ---@field sync_retain_empty_shelves boolean
 ---@field device_id string
@@ -95,6 +96,7 @@ local DEFAULTS = {
     sync_reading_sessions = true,
     sync_reading_progress = true,
     sync_annotations = true,
+    sync_book_info = true,
     sync_shelves_as_collections = true,
     sync_retain_empty_shelves = false,
     device_id = random.uuid(),
@@ -444,6 +446,19 @@ end
 
 function GrimmorySettings:toggleSyncAnnotations()
     self.data.sync_annotations = not self:getSyncAnnotations()
+    self:write()
+end
+
+function GrimmorySettings:getSyncBookInfo()
+    if self.data.sync_book_info == nil then
+        return DEFAULTS.sync_book_info
+    end
+
+    return self.data.sync_book_info
+end
+
+function GrimmorySettings:toggleSyncBookInfo()
+    self.data.sync_book_info = not self:getSyncBookInfo()
     self:write()
 end
 

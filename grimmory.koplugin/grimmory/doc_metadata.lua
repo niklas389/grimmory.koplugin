@@ -161,6 +161,116 @@ function DocMetadata:getASIN(path)
     )
 end
 
+-- KOReader's book information fields that Grimmory can set
+local CUSTOM_PROP_KEYS = { "title", "authors", "series", "series_index", "language", "keywords", "description" }
+
+local function as_text(value)
+    if type(value) == "string" then
+        value = util.trim(value)
+        return value ~= "" and value or nil
+    end
+    return nil
+end
+
+local function as_lines(values, sorted)
+    if type(values) ~= "table" then
+        return nil
+    end
+    local seen, lines = {}, {}
+    for _, value in ipairs(values) do
+        value = as_text(value)
+        if value and not seen[value] then
+            seen[value] = true
+            table.insert(lines, value)
+        end
+    end
+    if sorted then
+        -- Grimmory sends sets in any order
+        table.sort(lines)
+    end
+    return #lines > 0 and table.concat(lines, "\n") or nil
+end
+
+--- KOReader custom props from Grimmory metadata.  Keys Grimmory did not
+--- send (e.g. the description in list responses) are left out; keys it
+--- sent empty are false (use the file's own value).
+---@param metadata table title, authors (list), series_name, series_number, language, keywords (list), description
+function DocMetadata.toCustomProps(metadata)
+    local props = {
+        title = as_text(metadata.title) or false,
+        authors = as_lines(metadata.authors) or false,
+        series = as_text(metadata.series_name) or false,
+        language = as_text(metadata.language) or false,
+        keywords = as_lines(metadata.keywords, true) or false,
+    }
+    props.series_index = props.series and tonumber(metadata.series_number) or false
+    if metadata.description ~= nil then
+        props.description = as_text(metadata.description) or false
+    end
+    return props
+end
+
+--- Show Grimmory's metadata in KOReader: written as the book's custom
+--- metadata (as when editing it in Book information), so it overrides the
+--- file's own and can be reset there.  Writes only when something changed.
+---@return string[] changed The KOReader fields whose shown value changed
+function DocMetadata:applyGrimmoryMetadata(path, metadata)
+    local wanted = DocMetadata.toCustomProps(metadata)
+
+    local custom_file = DocSettings:findCustomMetadataFile(path)
+    local custom_settings = DocSettings.openSettingsFile(custom_file)
+    local custom_props = custom_settings:readSetting("custom_props") or {}
+    -- The file's own values (kept in the custom metadata file once it exists)
+    local original = custom_settings:readSetting("doc_props")
+        or self:getDocSettings(path):readSetting("doc_props") or {}
+
+    local written, changed = false, {}
+    for _, key in ipairs(CUSTOM_PROP_KEYS) do
+        local value = wanted[key]
+        if value ~= nil then
+            -- false: Grimmory has none, use the file's own value
+            value = value or nil
+            if custom_props[key] ~= value then
+                local shown_before = custom_props[key] or original[key]
+                custom_props[key] = value
+                written = true
+                if (value or original[key]) ~= shown_before then
+                    table.insert(changed, key)
+                end
+            end
+        end
+    end
+
+    if not written then
+        return changed
+    end
+
+    if next(custom_props) == nil then
+        if custom_file then
+            os.remove(custom_file)
+            DocSettings.removeSidecarDir(util.splitFilePathName(custom_file))
+        end
+        return changed
+    end
+
+    if not custom_file then
+        -- Like KOReader: keep the file's own values, for "reset"
+        local copy = {}
+        for key, value in pairs(original) do
+            if key ~= "display_title" then
+                copy[key] = value
+            end
+        end
+        custom_settings:saveSetting("doc_props", copy)
+    end
+
+    custom_settings:saveSetting("custom_props", custom_props)
+    custom_settings:flushCustomMetadata(path)
+
+    logger:dbg("Book information updated from Grimmory:", path, table.concat(changed, ", "))
+    return changed
+end
+
 function DocMetadata:getTitle(path)
     return self:getDocProps(path).title
 end

@@ -705,6 +705,26 @@ function Grimmory:describeBookSync(book_path, refresh_book, result, counts)
         add(_("Linked to the book in Grimmory"))
     end
 
+    local field_names = {
+        title = _("title"),
+        authors = _("authors"),
+        series = _("series"),
+        series_index = _("series number"),
+        language = _("language"),
+        keywords = _("tags"),
+        description = _("description"),
+    }
+    if result.info_changed and #result.info_changed > 0 then
+        local fields = {}
+        for _, key in ipairs(result.info_changed) do
+            table.insert(fields, field_names[key] or key)
+        end
+        add(T(_("Book information updated: %1"), table.concat(fields, ", ")))
+    end
+    if result.info_failed then
+        add(_("Book information could not be loaded"))
+    end
+
     if refresh_book then
         if result.file_replaced then
             add(_("File replaced with the version from Grimmory"))
@@ -846,6 +866,7 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
         local smart_titles = {}
         local progress_pushed = false
         local book_result = nil
+        local info_updated_paths = {}
 
         local update_progress_step = function(progress_step)
             if progress_step <= last_progress_step then
@@ -922,6 +943,8 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
                     progress_pushed = true
                 elseif progress.state == "book-sync-result" and type(progress.result) == "table" then
                     book_result = progress.result
+                elseif progress.state == "book-info-updated" and progress.book_path then
+                    table.insert(info_updated_paths, progress.book_path)
                 end
 
                 if progress.state == "smart-download" then
@@ -1021,6 +1044,19 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
         -- Also force refresh collections in this process
         ReadCollection.last_read_time = 0
         ReadCollection:_read()
+
+        -- Book information changed: drop KOReader's cached title, authors, ...
+        for _, path in ipairs(info_updated_paths) do
+            if path ~= book_path then
+                UIManager:broadcastEvent(Event:new("InvalidateMetadataCache", path))
+            end
+        end
+        if #info_updated_paths > 0 then
+            UIManager:broadcastEvent(Event:new("BookMetadataChanged"))
+            if self.ui and self.ui.file_chooser and #info_updated_paths > 0 then
+                self.ui.file_chooser:refreshPath()
+            end
+        end
 
         if book_path ~= nil then
             logger:info("Invalidating cache for book:", book_path)

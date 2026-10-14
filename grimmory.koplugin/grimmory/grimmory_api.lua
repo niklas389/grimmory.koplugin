@@ -23,6 +23,15 @@ local function from_json_value(value, converter, default_value)
     return converter(value)
 end
 
+local function json_null_to_nil(value)
+    -- json.decode.simple decodes JSON null as nil, but be safe with
+    -- decoders that return a sentinel.
+    if type(value) == "userdata" then
+        return nil
+    end
+    return value
+end
+
 local function from_json_string(value, default_value)
     return from_json_value(value, tostring, default_value)
 end
@@ -211,6 +220,28 @@ local function parse_server_progress(raw, read_status, fallback_percent)
     return { percent = percent and math.min(100, math.max(0, percent)) or nil, page = page }
 end
 
+--- Strings of a JSON list (or set) in their order; empty when missing
+local function string_list(value)
+    local list = {}
+    if type(value) == "table" then
+        for _, entry in ipairs(value) do
+            if type(entry) == "string" then
+                table.insert(list, entry)
+            end
+        end
+    end
+    return list
+end
+
+--- Grimmory's categories and tags, as KOReader keywords
+local function keyword_list(raw)
+    local keywords = string_list(raw.categories)
+    for _, tag in ipairs(string_list(raw.tags)) do
+        table.insert(keywords, tag)
+    end
+    return keywords
+end
+
 local function parse_book(book)
     local shelves = {}
 
@@ -228,6 +259,12 @@ local function parse_book(book)
         isbn13 = from_json_string(book_metadata["isbn13"]),
         asin = from_json_string(book_metadata["asin"]),
         title = from_json_string(book_metadata["title"]),
+        -- Shown in KOReader's book information
+        authors = string_list(book_metadata["authors"]),
+        series_name = from_json_string(json_null_to_nil(book_metadata["seriesName"])),
+        series_number = from_json_number(json_null_to_nil(book_metadata["seriesNumber"])),
+        language = from_json_string(json_null_to_nil(book_metadata["language"])),
+        keywords = keyword_list(book_metadata),
     }
 
     local primary_file = nil
@@ -1011,14 +1048,6 @@ end
 -- The server caps app pages at 50 items.
 local APP_PAGE_SIZE = 50
 
-local function json_null_to_nil(value)
-    -- json.decode.simple decodes JSON null as nil, but be safe with
-    -- decoders that return a sentinel.
-    if type(value) == "userdata" then
-        return nil
-    end
-    return value
-end
 
 ---@param params table<string, any>
 local function build_query(params)
@@ -1348,6 +1377,8 @@ function GrimmoryAPI:getAppBookDetail(book_id)
 
     detail.server_progress = parse_server_progress(body, detail.read_status, detail.read_progress)
     detail.description = from_json_string(json_null_to_nil(body.description))
+    detail.language = from_json_string(json_null_to_nil(body.language))
+    detail.keywords = keyword_list(body)
     detail.isbn13 = from_json_string(json_null_to_nil(body.isbn13))
     detail.library_name = from_json_string(json_null_to_nil(body.libraryName))
 

@@ -113,7 +113,12 @@ function GrimmoryMenu:getWhatToSyncMenu()
                 self.dialog_manager:showSessionThresholdSettings()
             end,
         },
-        self:toggleItem(_("Annotations"), "getSyncAnnotations", "toggleSyncAnnotations", { separator = true }),
+        self:toggleItem(_("Annotations"), "getSyncAnnotations", "toggleSyncAnnotations"),
+        self:toggleItem(_("Book Information"), "getSyncBookInfo", "toggleSyncBookInfo", {
+            help_text = _("Show title, authors, series, language, tags and description from Grimmory " ..
+                "in KOReader (as the book's custom metadata, which can be reset in Book information)."),
+            separator = true,
+        }),
         self:toggleItem(_("Shelves as Collections"), "getSyncShelves", "toggleSyncShelves"),
         self:toggleItem(_("Keep Empty Shelves"), "getSyncRetainEmptyShelves", "toggleSyncRetainEmptyShelves", {
             enabled_func = function()

@@ -1097,6 +1097,8 @@ function GrimmorySynchronize:pullBooks(callback)
     local seen_books = {}
     local seen_grimmory_ids = {}
 
+    local sync_book_info = self.settings:getSyncBookInfo()
+
     for book, element_count, total_books in self.api:getBooks() do
         if self:isTargetBook(book) then
             seen_grimmory_ids[tostring(book.id)] = true
@@ -1104,6 +1106,10 @@ function GrimmorySynchronize:pullBooks(callback)
             local pull_ok, pull_path_or_message, is_downloaded = pcall(self.pullBook, self, book)
             if pull_ok then
                 seen_books[pull_path_or_message] = true
+
+                if sync_book_info then
+                    self:applyBookInfo(pull_path_or_message, book.metadata, callback)
+                end
 
                 if is_downloaded then
                     callback({
@@ -1131,6 +1137,11 @@ function GrimmorySynchronize:pullBooks(callback)
                     viewed_books = element_count,
                     total_books = total_books,
                 })
+            end
+        elseif sync_book_info then
+            -- Not downloaded by the sync, but on the device (e.g. linked)
+            for _, path in ipairs(self:getLocalPaths(book.id)) do
+                self:applyBookInfo(path, book.metadata, callback)
             end
         end
     end
@@ -1203,6 +1214,49 @@ function GrimmorySynchronize:checkForHealthyServer()
     return true
 end
 
+--- Show a book's metadata from Grimmory in KOReader
+---@param metadata table See GrimmoryDocMetadata.toCustomProps
+---@return string[] changed KOReader fields that changed
+function GrimmorySynchronize:applyBookInfo(book_path, metadata, callback)
+    local ok, changed = pcall(self.doc_metadata.applyGrimmoryMetadata, self.doc_metadata, book_path, metadata)
+
+    if not ok then
+        logger:err("Could not update book information:", book_path, "-", changed)
+        return {}
+    end
+
+    if #changed > 0 then
+        callback({ state = "book-info-updated", book_path = book_path })
+    end
+
+    return changed
+end
+
+--- Paths of the copies of a Grimmory book on the device
+---@return string[]
+function GrimmorySynchronize:getLocalPaths(grimmory_id)
+    local paths = {}
+    local ok, local_books = self.repository:findBooksByGrimmoryId(grimmory_id)
+    if ok then
+        for _, local_book in ipairs(local_books) do
+            if util.fileExists(local_book.book_path) then
+                table.insert(paths, local_book.book_path)
+            end
+        end
+    end
+    return paths
+end
+
+--- Book information of every Grimmory book on the device, for when the
+--- book pull (which does it on the way) is off
+function GrimmorySynchronize:updateAllBookInfo(callback)
+    for book in self.api:getBooks() do
+        for _, path in ipairs(self:getLocalPaths(book.id)) do
+            self:applyBookInfo(path, book.metadata, callback)
+        end
+    end
+end
+
 function GrimmorySynchronize:synchronizeAll(callback)
     if not self:checkForHealthyServer() then
         return error("Cannot connect to valid server")
@@ -1220,6 +1274,13 @@ function GrimmorySynchronize:synchronizeAll(callback)
     -- reading progress may change the books we sync down
     logger:info("Pulling books")
     self:pullBooks(callback)
+
+    if self.settings:getSyncBookInfo() and not self.settings:getDownloadsBooks() then
+        local info_ok, info_error = pcall(self.updateAllBookInfo, self, callback)
+        if not info_ok then
+            logger:err("Could not update book information:", info_error)
+        end
+    end
 
     -- Clean up empty shelves
     self:removeEmptyShelves(callback)
@@ -1328,6 +1389,25 @@ function GrimmorySynchronize:synchronizeBook(book_path, refresh_book, callback)
             result.newly_linked = true
         else
             logger:warn("Unable to locate book in Grimmory:", book_path)
+        end
+    end
+
+    -- Title, authors, series, ... from Grimmory
+    if grimmory_id and self.settings:getSyncBookInfo() then
+        local detail_ok, detail = self.api:getAppBookDetail(grimmory_id)
+        if detail_ok then
+            result.info_changed = self:applyBookInfo(book_path, {
+                title = detail.title,
+                authors = detail.authors,
+                series_name = detail.series_name,
+                series_number = detail.series_number,
+                language = detail.language,
+                keywords = detail.keywords,
+                description = detail.description or "",
+            }, callback)
+        else
+            logger:err("Could not load book information:", grimmory_id, detail)
+            result.info_failed = true
         end
     end
 
