@@ -19,7 +19,6 @@ local HorizontalSpan = require("ui/widget/horizontalspan")
 local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local IconWidget = require("ui/widget/iconwidget")
-local InputDialog = require("ui/widget/inputdialog")
 local LineWidget = require("ui/widget/linewidget")
 local TopContainer = require("ui/widget/container/topcontainer")
 local ProgressWidget = require("ui/widget/progresswidget")
@@ -32,13 +31,13 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local lfs = require("libs/libkoreader-lfs")
-local util = require("util")
 local _ = require("gettext")
 local N_ = _.ngettext
 local T = require("ffi/util").template
 
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Covers = require("grimmory/ui/library/covers")
+local InputSheet = require("grimmory/ui/input_sheet")
 local LibraryData = require("grimmory/ui/library/data")
 local Sheet = require("grimmory/ui/sheet")
 local Style = require("grimmory/ui/style")
@@ -1579,58 +1578,36 @@ end
 
 function LibraryBrowser:showSearch(screen)
     local search_series = screen.kind == "series"
-    local dialog
 
-    dialog = InputDialog:new({
+    InputSheet.show({
         title = search_series and _("Search series") or _("Search books"),
-        buttons = {
-            {
-                {
-                    text = _("Cancel"),
-                    id = "close",
-                    callback = function()
-                        UIManager:close(dialog)
+        icon = "search",
+        hint = search_series and _("Series name") or _("Title, author, series…"),
+        ok_text = _("Search"),
+        on_ok = function(text)
+            if search_series then
+                self:push({
+                    type = "collections",
+                    kind = "series",
+                    title = T(_("Series: “%1”"), text),
+                    paged = true,
+                    page = 1,
+                    with_covers = true,
+                    load = function(page, size, done)
+                        self.data:fetch("series-search:" .. text .. ":" .. size .. ":" .. page, function()
+                            return self.api:getAppSeries({ page = page, size = size, search = text })
+                        end, done)
                     end,
-                },
-                {
-                    text = _("Search"),
-                    is_enter_default = true,
-                    callback = function()
-                        local text = util.trim(dialog:getInputText() or "")
-                        UIManager:close(dialog)
-                        if text == "" then
-                            return
-                        end
-
-                        if search_series then
-                            self:push({
-                                type = "collections",
-                                kind = "series",
-                                title = T(_("Series: “%1”"), text),
-                                paged = true,
-                                page = 1,
-                                with_covers = true,
-                                load = function(page, size, done)
-                                    self.data:fetch("series-search:" .. text .. ":" .. size .. ":" .. page, function()
-                                        return self.api:getAppSeries({ page = page, size = size, search = text })
-                                    end, done)
-                                end,
-                            })
-                        else
-                            self:push(self:filteredBooksScreen(
-                                T(_("Search: “%1”"), text),
-                                "search:" .. text,
-                                { search = text, sort = "title", dir = "asc" }
-                            ))
-                        end
-                    end,
-                },
-            },
-        },
+                })
+            else
+                self:push(self:filteredBooksScreen(
+                    T(_("Search: “%1”"), text),
+                    "search:" .. text,
+                    { search = text, sort = "title", dir = "asc" }
+                ))
+            end
+        end,
     })
-
-    UIManager:show(dialog)
-    dialog:onShowKeyboard()
 end
 
 function LibraryBrowser:setLayout(layout)
