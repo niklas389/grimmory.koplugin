@@ -65,11 +65,10 @@ Style.ICON = {
     close = "\u{E855}",
     settings = "\u{F423}",
     plugin = "\u{EB30}",
+    select = "\u{EB84}",
+    select_all = "\u{EB85}",
+    deselect = "\u{EB87}",
     hourglass = "\u{F254}",
-    first_page = "\u{F100}",
-    last_page = "\u{F101}",
-    previous_page = "\u{F104}",
-    next_page = "\u{F105}",
 }
 
 --- Face for a glyph drawn in a square box of `box` pixels (the ink of the

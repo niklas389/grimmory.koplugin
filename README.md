@@ -35,6 +35,9 @@ The Grimmory plugin is under "Tools" (🛠️) for configuration.
   device and are synced.
 - **Hold** a book for its actions (read, download, details, series, delete),
   or a series, shelf or library for its download settings.
+- **Download several books**: "⋯" -> "Select books to download" (or hold a
+  book), tick the books, on any page of the list, and tap "Download".  They
+  are downloaded one after another, with the progress at the bottom.
 - **Search** books (or series, in the Series tab) with the magnifier.
 - **Download with automatic sync**: tick it inside a shelf, library or series
   (or hold its entry) to let the sync download its books.
@@ -43,8 +46,9 @@ The Grimmory plugin is under "Tools" (🛠️) for configuration.
 
 The browser and the plugin's dialogs follow the look of
 [SimpleUI](https://github.com/doctorhetfield-cmd/simpleui.koplugin) 3.  With
-SimpleUI installed, the dialogs are SimpleUI's own action sheets; without it,
-KOReader's dialogs with the same choices.
+SimpleUI installed, the dialogs are SimpleUI's own action sheets and the
+back, search, menu and page buttons use SimpleUI's icons (also the ones
+chosen in its settings); without it, KOReader's dialogs and icons.
 
 Each page is loaded with exactly the books it shows, and loaded pages are
 kept for 10 minutes ("⋯" -> Refresh reloads).  A book downloaded here

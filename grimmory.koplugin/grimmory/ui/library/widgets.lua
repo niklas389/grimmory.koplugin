@@ -18,7 +18,6 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan = require("ui/widget/horizontalspan")
-local IconButton = require("ui/widget/iconbutton")
 local IconWidget = require("ui/widget/iconwidget")
 local ImageWidget = require("ui/widget/imagewidget")
 local InputContainer = require("ui/widget/container/inputcontainer")
@@ -39,6 +38,7 @@ local _ = require("gettext")
 local T = require("ffi/util").template
 
 local Covers = require("grimmory/ui/library/covers")
+local Icons = require("grimmory/ui/icons")
 local PluginMetadata = require("grimmory/plugin_metadata")
 local Style = require("grimmory/ui/style")
 
@@ -167,17 +167,6 @@ end
 
 Widgets.Tappable = Tappable
 
-function Widgets.iconButton(icon, callback, size, enabled)
-    size = size or Widgets.ICON_SIZE
-    return IconButton:new({
-        icon = icon,
-        width = size,
-        height = size,
-        callback = callback,
-        enabled = enabled ~= false,
-    })
-end
-
 -------------------------------------------------------------------------------
 -- Covers
 -------------------------------------------------------------------------------
@@ -192,6 +181,7 @@ local CoverSlot = WidgetContainer:extend{
     title = nil,
     on_device = false,
     full = false, -- full size cover instead of the thumbnail
+    selected = nil, -- while selecting: true / false (a check box), nil: not selectable
 }
 
 function CoverSlot:init()
@@ -305,6 +295,27 @@ function CoverSlot:update()
         table.insert(children, badge)
     end
 
+    if self.selected ~= nil then
+        -- Check box, top left: black with a tick when selected
+        local cover_min = math.min(cover_w, cover_h)
+        local box = math.max(12, math.floor(cover_min * 0.24))
+        local inner = box - 2 * Size.border.thick
+        local marker = FrameContainer:new({
+            padding = 0,
+            margin = 0,
+            bordersize = Size.border.thick,
+            radius = math.floor(box * 0.2),
+            background = self.selected and Style.COLOR.text or Style.COLOR.surface,
+            self.selected and Style.glyph("tick", inner, Style.COLOR.surface)
+                or WidgetContainer:new({ dimen = Geom:new({ w = inner, h = inner }) }),
+        })
+        local cover_x = math.floor((self.width - cover_w) / 2)
+        local cover_y = math.floor((self.height - cover_h) / 2)
+        local inset = math.max(1, math.floor(cover_min * 0.05))
+        marker.overlap_offset = { cover_x + inset, cover_y + inset }
+        table.insert(children, marker)
+    end
+
     self[1] = OverlapGroup:new(children)
 end
 
@@ -385,6 +396,7 @@ function Widgets.bookListItem(book, opts)
         cover_updated_on = book.cover_updated_on,
         title = book.title,
         on_device = opts.on_device,
+        selected = opts.selected,
     })
 
     -- Fit the text into the row: two title lines if there is room, else one;
@@ -498,6 +510,7 @@ function Widgets.bookGridCell(book, opts)
         cover_updated_on = book.cover_updated_on,
         title = book.title,
         on_device = opts.on_device,
+        selected = opts.selected,
     })
 
     local group = VerticalGroup:new({
@@ -663,7 +676,8 @@ end
 
 --- Metrics of the top bar: the icons are as high as the tab labels.
 local function topBarMetrics()
-    local face = Style.face(Style.FS_BODY)
+    -- SimpleUI's tab face follows its title bar size setting
+    local face = Icons.tabsFace() or Style.face(Style.FS_BODY)
     local probe = TextWidget:new({ text = "A", face = face, padding = 0 })
     local text_h = probe:getSize().h
     probe:free()
@@ -752,7 +766,9 @@ local function tabCells(opts, m, strip_w)
     end
 
     if opts.on_search then
-        table.insert(row, barButton(Style.glyph("search", m.icon), m.icon, m.height, m.tap_pad, opts.on_search))
+        -- Drawn larger than its slot, as in SimpleUI's bar
+        local search = Icons.widget("search", math.floor(m.icon * 1.37))
+        table.insert(row, barButton(search, m.icon, m.height, m.tap_pad, opts.on_search))
     end
 
     return row
@@ -770,7 +786,7 @@ function Widgets.topBar(opts)
     local x = m.margin
     if opts.on_back then
         local back = barButton(
-            IconWidget:new({ icon = "chevron.left", width = m.icon, height = m.icon }),
+            Icons.widget("back", m.icon),
             m.icon, m.height, m.tap_pad, opts.on_back
         )
         back.overlap_offset = { x - m.tap_pad, 0 }
@@ -780,7 +796,7 @@ function Widgets.topBar(opts)
 
     local more_x = width - m.margin - m.icon - m.tap_pad
     if opts.on_more then
-        local more = barButton(Style.glyph("more", m.icon), m.icon, m.height, m.tap_pad, opts.on_more)
+        local more = barButton(Icons.widget("menu", m.icon), m.icon, m.height, m.tap_pad, opts.on_more)
         more.overlap_offset = { more_x, 0 }
         table.insert(children, more)
     end
@@ -893,36 +909,89 @@ function Widgets.checkboxRow(opts)
     return item
 end
 
---- Page footer: «  ‹  Page 2 of 7  ›  »
-function Widgets.footer(opts)
-    local width = opts.width
-    local icon = Screen:scaleBySize(26)
-    local height = icon + 2 * Widgets.PADDING
+--- Height of the bar at the bottom (pager, selection, download progress):
+--- the same for all, so the page size does not change between them.
+function Widgets.footerHeight()
+    return Screen:scaleBySize(44) + 2 * Widgets.PADDING
+end
 
-    if not opts.pages or opts.pages <= 1 then
-        -- Nothing to turn: keep the space, so all lists have the same height
-        return VerticalSpan:new({ width = height })
-    end
+--- «  ‹  Page 2 of 7  ›  » (`compact`: ‹ 2 / 7 ›)
+local function pager(opts, compact)
+    local icon = Screen:scaleBySize(26)
 
     local function button(name, page, enabled)
-        return Widgets.iconButton(name, function() opts.on_page(page) end, icon, enabled)
+        local widget = Icons.widget(name, icon, not enabled)
+        if not enabled then
+            return widget
+        end
+        local tappable = Tappable:new({ width = icon, height = icon, on_tap = function() opts.on_page(page) end })
+        tappable[1] = widget
+        return tappable
     end
-    local gap = HorizontalSpan:new({ width = 2 * Widgets.PADDING })
+    local gap = HorizontalSpan:new({ width = (compact and 1 or 2) * Widgets.PADDING })
+    local text = compact and T("%1 / %2", opts.page, opts.pages) or T(_("Page %1 of %2"), opts.page, opts.pages)
+
+    local group = HorizontalGroup:new({ align = "center" })
+    if not compact then
+        table.insert(group, button("first", 1, opts.page > 1))
+        table.insert(group, gap)
+    end
+    table.insert(group, button("previous", opts.page - 1, opts.page > 1))
+    table.insert(group, gap)
+    table.insert(group, TextWidget:new({ text = text, face = Style.face(Style.FS_DETAIL) }))
+    table.insert(group, gap)
+    table.insert(group, button("next", opts.page + 1, opts.page < opts.pages))
+    if not compact then
+        table.insert(group, gap)
+        table.insert(group, button("last", opts.pages, opts.page < opts.pages))
+    end
+    return group
+end
+
+--- Page footer: «  ‹  Page 2 of 7  ›  »
+function Widgets.footer(opts)
+    local dimen = Geom:new({ w = opts.width, h = Widgets.footerHeight() })
+    if not opts.pages or opts.pages <= 1 then
+        -- Nothing to turn: keep the space, so all lists have the same height
+        return VerticalSpan:new({ width = dimen.h })
+    end
+    return CenterContainer:new({ dimen = dimen, pager(opts) })
+end
+
+--- While selecting: [Cancel]  ‹ 2 / 7 ›  [Download (3)]
+---@param opts table width, page, pages, on_page, count, on_cancel, on_download
+function Widgets.selectionFooter(opts)
+    local margin = Style.SIDE_MARGIN
+    local inner_w = opts.width - 2 * margin
+    local middle = (opts.pages or 1) > 1 and pager(opts, true) or HorizontalSpan:new({ width = 0 })
+    local middle_w = math.max(middle:getSize().w, math.floor(inner_w * 0.25))
+    local button_w = math.floor((inner_w - middle_w - 2 * Widgets.PADDING) / 2)
 
     return CenterContainer:new({
-        dimen = Geom:new({ w = width, h = height }),
+        dimen = Geom:new({ w = opts.width, h = Widgets.footerHeight() }),
         HorizontalGroup:new({
             align = "center",
-            button("chevron.first", 1, opts.page > 1),
-            gap,
-            button("chevron.left", opts.page - 1, opts.page > 1),
-            gap,
-            TextWidget:new({ text = T(_("Page %1 of %2"), opts.page, opts.pages), face = Style.face(Style.FS_DETAIL) }),
-            gap,
-            button("chevron.right", opts.page + 1, opts.page < opts.pages),
-            gap,
-            button("chevron.last", opts.pages, opts.page < opts.pages),
+            Widgets.segments({ { text = _("Cancel"), callback = opts.on_cancel } }, button_w),
+            HorizontalSpan:new({ width = Widgets.PADDING }),
+            CenterContainer:new({ dimen = Geom:new({ w = middle_w, h = Widgets.footerHeight() }), middle }),
+            HorizontalSpan:new({ width = Widgets.PADDING }),
+            Widgets.segments({
+                {
+                    text = T(_("Download (%1)"), opts.count),
+                    selected = true,
+                    enabled = opts.count > 0,
+                    callback = opts.on_download,
+                },
+            }, button_w),
         }),
+    })
+end
+
+--- `widget` (e.g. a download progress bar) in the bottom bar's place
+function Widgets.footerWith(widget, width)
+    return CenterContainer:new({
+        dimen = Geom:new({ w = width, h = Widgets.footerHeight() }),
+        widget,
     })
 end
 
