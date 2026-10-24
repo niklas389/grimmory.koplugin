@@ -4,8 +4,8 @@ cells, collection rows, the header, tab strip and page footer.
 
 The cover list / grid approach (cover beside or above the text, covers loaded
 after the page is shown) follows opds_plus.koplugin (AGPL-3.0,
-https://github.com/greywolf1499/opds_plus.koplugin); the tab strip and the
-compact header follow the look of simpleui.koplugin (MIT,
+https://github.com/greywolf1499/opds_plus.koplugin); the top bar, the grid
+labels, rows and buttons follow the look of simpleui.koplugin 3 (GPL-3.0,
 https://github.com/doctorhetfield-cmd/simpleui.koplugin).
 --]]
 
@@ -40,6 +40,7 @@ local T = require("ffi/util").template
 
 local Covers = require("grimmory/ui/library/covers")
 local PluginMetadata = require("grimmory/plugin_metadata")
+local Style = require("grimmory/ui/style")
 
 local Screen = Device.screen
 
@@ -49,9 +50,33 @@ Widgets.faces = {
     title = Font:getFace("cfont", 19),
     text = Font:getFace("cfont", 16),
     small = Font:getFace("cfont", 14),
-    header = Font:getFace("smalltfont"),
-    tab = Font:getFace("cfont", 18),
+    -- Below the covers of the grid: title (bold) and author, one line each
+    grid_title = Font:getFace("cfont", Style.FS_DETAIL),
+    grid_subtitle = Font:getFace("cfont", Style.FS_CAPTION + 1),
 }
+
+--- Height of the two label lines below a grid cover
+function Widgets.gridLabelHeight()
+    return Widgets.linesHeight(Widgets.faces.grid_title, 1) + Widgets.linesHeight(Widgets.faces.grid_subtitle, 1)
+end
+
+--- Title and subtitle lines of a grid cell, centered, one line each.
+local function gridLabels(group, title, subtitle, width)
+    table.insert(group, TextWidget:new({
+        text = title,
+        face = Widgets.faces.grid_title,
+        bold = true,
+        max_width = width,
+    }))
+    if subtitle and subtitle ~= "" then
+        table.insert(group, TextWidget:new({
+            text = subtitle,
+            face = Widgets.faces.grid_subtitle,
+            fgcolor = Style.COLOR.text_secondary,
+            max_width = width,
+        }))
+    end
+end
 
 Widgets.PADDING = Screen:scaleBySize(8)
 Widgets.ICON_SIZE = Screen:scaleBySize(34)
@@ -141,14 +166,6 @@ function Tappable:onHoldItem()
 end
 
 Widgets.Tappable = Tappable
-
---- A square icon button from a plugin SVG file.
-function Widgets.fileIconButton(icon_name, callback, size)
-    size = size or Widgets.ICON_SIZE
-    local button = Tappable:new({ width = size, height = size, on_tap = callback })
-    button[1] = IconWidget:new({ file = Widgets.pluginIcon(icon_name), width = size, height = size, alpha = true })
-    return button
-end
 
 function Widgets.iconButton(icon, callback, size, enabled)
     size = size or Widgets.ICON_SIZE
@@ -356,9 +373,10 @@ end
 function Widgets.bookListItem(book, opts)
     local width, height = opts.width, opts.height
     local padding = Widgets.PADDING
+    local margin = Style.SIDE_MARGIN
     local cover_h = height - 2 * padding
     local cover_w = Widgets.coverWidth(cover_h)
-    local text_w = width - cover_w - 4 * padding
+    local text_w = width - cover_w - 2 * margin - 2 * padding
 
     local cover = CoverSlot:new({
         width = cover_w,
@@ -445,11 +463,11 @@ function Widgets.bookListItem(book, opts)
         align = "left",
         HorizontalGroup:new({
             align = "center",
-            HorizontalSpan:new({ width = padding }),
+            HorizontalSpan:new({ width = margin }),
             cover,
             HorizontalSpan:new({ width = 2 * padding }),
             LeftContainer:new({
-                dimen = Geom:new({ w = text_w + padding, h = height - Size.line.thin }),
+                dimen = Geom:new({ w = text_w + margin, h = height - Size.line.thin }),
                 lines,
             }),
         }),
@@ -463,13 +481,13 @@ function Widgets.bookListItem(book, opts)
     return item
 end
 
---- One book in the grid layout: cover with the title below.
+--- One book in the grid layout: cover with title and author below.
 ---@param book LibraryBook
 function Widgets.bookGridCell(book, opts)
     local width, height = opts.width, opts.height
     local padding = Widgets.PADDING
     local cover_w = width - 2 * padding
-    local title_h = Widgets.linesHeight(Widgets.faces.small, opts.title_lines)
+    local title_h = Widgets.gridLabelHeight()
     local cover_h = math.min(Widgets.coverHeight(cover_w), height - title_h - 3 * padding - Screen:scaleBySize(7))
     cover_w = math.min(cover_w, Widgets.coverWidth(cover_h))
 
@@ -506,15 +524,12 @@ function Widgets.bookGridCell(book, opts)
     end
     table.insert(group, VerticalSpan:new({ width = math.floor(padding / 2) }))
 
-    table.insert(group, TextBoxWidget:new({
-        text = book.title ~= "" and book.title or (book.primary_file_name or ""),
-        face = Widgets.faces.small,
-        width = width - padding,
-        height = math.floor(title_h),
-        height_adjust = true,
-        height_overflow_show_ellipsis = true,
-        alignment = "center",
-    }))
+    gridLabels(
+        group,
+        book.title ~= "" and book.title or (book.primary_file_name or ""),
+        #book.authors > 0 and table.concat(book.authors, ", ") or nil,
+        width - padding
+    )
 
     local item = Tappable:new({ width = width, height = height, on_tap = opts.on_tap, on_hold = opts.on_hold })
     item[1] = TopContainer:new({
@@ -535,10 +550,8 @@ end
 function Widgets.collectionGridCell(opts)
     local width, height = opts.width, opts.height
     local padding = Widgets.PADDING
-    local title_h = Widgets.linesHeight(Widgets.faces.small, 2)
-    local subtitle_h = Widgets.linesHeight(Widgets.faces.small, 1)
     local cover_w = width - 2 * padding
-    local cover_h = math.min(Widgets.coverHeight(cover_w), height - title_h - subtitle_h - 3 * padding)
+    local cover_h = math.min(Widgets.coverHeight(cover_w), height - Widgets.gridLabelHeight() - 3 * padding)
     cover_w = math.min(cover_w, Widgets.coverWidth(cover_h))
 
     local cover = CoverSlot:new({
@@ -554,26 +567,8 @@ function Widgets.collectionGridCell(opts)
         VerticalSpan:new({ width = padding }),
         cover,
         VerticalSpan:new({ width = math.floor(padding / 2) }),
-        TextBoxWidget:new({
-            text = opts.title,
-            face = Widgets.faces.small,
-            bold = true,
-            width = width - padding,
-            height = title_h,
-            height_adjust = true,
-            height_overflow_show_ellipsis = true,
-            alignment = "center",
-        }),
     })
-
-    if opts.subtitle and opts.subtitle ~= "" then
-        table.insert(group, TextWidget:new({
-            text = opts.subtitle,
-            face = Widgets.faces.small,
-            max_width = width - padding,
-            fgcolor = Blitbuffer.COLOR_DARK_GRAY,
-        }))
-    end
+    gridLabels(group, opts.title, opts.subtitle, width - padding)
 
     local item = Tappable:new({ width = width, height = height, on_tap = opts.on_tap, on_hold = opts.on_hold })
     item[1] = TopContainer:new({
@@ -590,7 +585,8 @@ end
 function Widgets.collectionRow(opts)
     local width, height = opts.width, opts.height
     local padding = Widgets.PADDING
-    local left = HorizontalGroup:new({ align = "center", HorizontalSpan:new({ width = padding }) })
+    local margin = Style.SIDE_MARGIN
+    local left = HorizontalGroup:new({ align = "center", HorizontalSpan:new({ width = margin }) })
     local cover
 
     if opts.cover then
@@ -612,8 +608,8 @@ function Widgets.collectionRow(opts)
         bold = true,
     }) or nil
     local badge_w = badge and (badge:getSize().w + 2 * padding) or padding
-    local used_w = padding + (cover and (cover.width + 2 * padding) or 0)
-    local text_w = width - used_w - badge_w - padding
+    local used_w = margin + (cover and (cover.width + 2 * padding) or 0)
+    local text_w = width - used_w - badge_w - margin
 
     local lines = VerticalGroup:new({
         align = "left",
@@ -643,7 +639,7 @@ function Widgets.collectionRow(opts)
     })
     if badge then
         table.insert(content, RightContainer:new({
-            dimen = Geom:new({ w = width - padding, h = row_h }),
+            dimen = Geom:new({ w = width - margin, h = row_h }),
             badge,
         }))
     end
@@ -662,127 +658,214 @@ function Widgets.collectionRow(opts)
 end
 
 -------------------------------------------------------------------------------
--- Header, tabs, footer
+-- Top bar, rows, buttons, footer (in the style of SimpleUI 3's library)
 -------------------------------------------------------------------------------
 
---- Header: [back] title ... [icons].  `opts.icons` is a list of widgets.
-function Widgets.header(opts)
-    local width = opts.width
-    local padding = Widgets.PADDING
-    local title_face_h = TextWidget:new({ text = "Mg", face = Widgets.faces.header, bold = true }):getSize().h
-    local subtitle_face_h = TextWidget:new({ text = "Mg", face = Widgets.faces.small }):getSize().h
-    -- Always room for a title and a subtitle line, so the header has the
-    -- same height on every screen
-    local height = math.max(Widgets.ICON_SIZE, title_face_h + subtitle_face_h) + 2 * padding
-
-    local left = HorizontalGroup:new({ align = "center", HorizontalSpan:new({ width = padding }) })
-    if opts.on_back then
-        table.insert(left, Widgets.iconButton("chevron.left", opts.on_back))
-        table.insert(left, HorizontalSpan:new({ width = padding }))
-    end
-
-    local right = HorizontalGroup:new({ align = "center" })
-    for _, icon in ipairs(opts.icons or {}) do
-        table.insert(right, icon)
-        table.insert(right, HorizontalSpan:new({ width = 2 * padding }))
-    end
-
-    local title_w = width - left:getSize().w - right:getSize().w - 2 * padding
-    local title = VerticalGroup:new({
-        align = "left",
-        TextWidget:new({
-            text = opts.title or "",
-            face = Widgets.faces.header,
-            bold = true,
-            max_width = title_w,
-        }),
-    })
-    if opts.subtitle and opts.subtitle ~= "" then
-        table.insert(title, TextWidget:new({
-            text = opts.subtitle,
-            face = Widgets.faces.small,
-            max_width = title_w,
-            fgcolor = Blitbuffer.COLOR_DARK_GRAY,
-        }))
-    end
-    table.insert(left, title)
-    -- Children were added after measuring: drop the cached layout
-    left:resetLayout()
-
-    return VerticalGroup:new({
-        OverlapGroup:new({
-            dimen = Geom:new({ w = width, h = height }),
-            LeftContainer:new({ dimen = Geom:new({ w = width, h = height }), left }),
-            RightContainer:new({ dimen = Geom:new({ w = width, h = height }), right }),
-        }),
-        LineWidget:new({ dimen = Geom:new({ w = width, h = Size.line.medium }) }),
-    })
+--- Metrics of the top bar: the icons are as high as the tab labels.
+local function topBarMetrics()
+    local face = Style.face(Style.FS_BODY)
+    local probe = TextWidget:new({ text = "A", face = face, padding = 0 })
+    local text_h = probe:getSize().h
+    probe:free()
+    return {
+        face = face,
+        icon = text_h,
+        height = text_h + 2 * Screen:scaleBySize(16),
+        margin = Style.SIDE_MARGIN,
+        tap_pad = Screen:scaleBySize(8),
+        back_gap = Screen:scaleBySize(14),
+        tab_pad = Screen:scaleBySize(14),
+        underline = Screen:scaleBySize(2),
+    }
 end
 
---- One-tap tab strip.  `opts.tabs` = { { id, text } }, `opts.selected` = id.
-function Widgets.tabStrip(opts)
-    local width = opts.width
-    local padding = Widgets.PADDING
-    local tab_w = math.floor(width / #opts.tabs)
-    local label_h = TextWidget:new({ text = "Ag", face = Widgets.faces.tab }):getSize().h
-    local underline_h = Screen:scaleBySize(3)
-    local height = label_h + 2 * padding + underline_h
+function Widgets.topBarHeight()
+    return topBarMetrics().height
+end
 
-    local row = HorizontalGroup:new({})
+--- An icon with a tap area `tap_pad` wider on each side and as high as the bar.
+local function barButton(icon_widget, icon_w, bar_h, tap_pad, callback)
+    local button = Tappable:new({ width = icon_w + 2 * tap_pad, height = bar_h, on_tap = callback })
+    button[1] = CenterContainer:new({
+        dimen = Geom:new({ w = icon_w + 2 * tap_pad, h = bar_h }),
+        icon_widget,
+    })
+    return button
+end
+
+--- The tab cells: labels left aligned with their natural width, the
+--- selected one bold and underlined, then the search icon.
+local function tabCells(opts, m, strip_w)
+    local entries, content_w = {}, 0
+    local search_w = opts.on_search and (m.icon + 2 * m.tap_pad) or 0
+    local max_label_w = math.floor((strip_w - search_w) / math.max(1, #opts.tabs))
+
     for _, tab in ipairs(opts.tabs) do
         local selected = tab.id == opts.selected
+        local function label(bold)
+            return TextWidget:new({ text = tab.text, face = m.face, padding = 0, bold = bold, max_width = max_label_w })
+        end
+        local regular, bold = label(false), label(true)
+        -- The widest variant, so selecting a tab does not move the others
+        local w = math.max(regular:getWidth(), bold:getWidth())
+        if selected then
+            regular:free()
+        else
+            bold:free()
+        end
+        table.insert(entries, { tab = tab, text = selected and bold or regular, w = w, selected = selected })
+        content_w = content_w + w
+    end
+
+    -- Less space between the tabs when they do not fit
+    local pad = math.min(m.tab_pad, math.max(0, math.floor((strip_w - search_w - content_w) / (2 * #entries))))
+
+    local row = HorizontalGroup:new({ align = "top" })
+    for i, entry in ipairs(entries) do
+        local lead = i == 1 and 0 or pad
+        local cell_w = lead + entry.w + pad
         local cell = Tappable:new({
-            width = tab_w,
-            height = height,
+            width = cell_w,
+            height = m.height,
             on_tap = function()
-                opts.on_select(tab.id)
+                opts.on_select(entry.tab.id)
             end,
         })
-        cell[1] = VerticalGroup:new({
-            CenterContainer:new({
-                dimen = Geom:new({ w = tab_w, h = height - underline_h }),
-                TextWidget:new({
-                    text = tab.text,
-                    face = Widgets.faces.tab,
-                    bold = selected,
-                    max_width = tab_w - padding,
-                    fgcolor = selected and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_DARK_GRAY,
-                }),
+        local dimen = Geom:new({ w = cell_w, h = m.height })
+        local content = OverlapGroup:new({
+            dimen = dimen,
+            LeftContainer:new({
+                dimen = dimen,
+                HorizontalGroup:new({ HorizontalSpan:new({ width = lead }), entry.text }),
             }),
-            selected and LineWidget:new({
-                dimen = Geom:new({ w = tab_w, h = underline_h }),
-            }) or VerticalSpan:new({ width = underline_h }),
         })
+        if entry.selected then
+            local underline = LineWidget:new({
+                dimen = Geom:new({ w = entry.w, h = m.underline }),
+                background = Style.COLOR.text,
+            })
+            underline.overlap_offset = { lead, m.height - m.underline }
+            table.insert(content, underline)
+        end
+        cell[1] = content
         table.insert(row, cell)
     end
 
-    return VerticalGroup:new({
-        row,
-        LineWidget:new({
-            dimen = Geom:new({ w = width, h = Size.line.thin }),
-            background = Blitbuffer.COLOR_GRAY_B,
-        }),
-    })
+    if opts.on_search then
+        table.insert(row, barButton(Style.glyph("search", m.icon), m.icon, m.height, m.tap_pad, opts.on_search))
+    end
+
+    return row
 end
 
---- A full width checkbox row: [✓] text
-function Widgets.checkboxRow(opts)
-    local padding = Widgets.PADDING
-    local box_size = Widgets.linesHeight(Widgets.faces.text, 1)
-    local height = box_size + 2 * padding
+--- The browser's top bar: [‹] tabs (or a label) [search] ... [loading] [⋯]
+---@param opts table width, tabs ({ id, text }), selected, on_select, label,
+---  on_back, on_search, on_more, on_loading_area (the area of the loading
+---  indicator, when painted)
+function Widgets.topBar(opts)
+    local m = topBarMetrics()
+    local width = opts.width
+    local children = { dimen = Geom:new({ w = width, h = m.height }) }
 
-    local inner = box_size - 2 * Size.border.thick
-    local box = FrameContainer:new({
-        padding = 0,
-        margin = 0,
-        bordersize = Size.border.thick,
-        radius = Size.radius.default,
-        CenterContainer:new({
-            dimen = Geom:new({ w = inner, h = inner }),
-            opts.checked and IconWidget:new({ icon = "check", width = inner, height = inner })
-                or HorizontalSpan:new({ width = 0 }),
-        }),
+    local x = m.margin
+    if opts.on_back then
+        local back = barButton(
+            IconWidget:new({ icon = "chevron.left", width = m.icon, height = m.icon }),
+            m.icon, m.height, m.tap_pad, opts.on_back
+        )
+        back.overlap_offset = { x - m.tap_pad, 0 }
+        table.insert(children, back)
+        x = x + m.icon + m.back_gap
+    end
+
+    local more_x = width - m.margin - m.icon - m.tap_pad
+    if opts.on_more then
+        local more = barButton(Style.glyph("more", m.icon), m.icon, m.height, m.tap_pad, opts.on_more)
+        more.overlap_offset = { more_x, 0 }
+        table.insert(children, more)
+    end
+
+    -- The loading indicator is painted here (blank while idle)
+    local loading_x = more_x - m.icon - m.tap_pad
+    local loading = PaintTracker:new({
+        WidgetContainer:new({ dimen = Geom:new({ w = m.icon, h = m.icon }) }),
+        on_paint = opts.on_loading_area,
     })
+    loading.overlap_offset = { loading_x, math.floor((m.height - m.icon) / 2) }
+    table.insert(children, loading)
+
+    local strip_w = loading_x - m.tap_pad - x
+    local strip
+    if opts.tabs then
+        strip = tabCells(opts, m, strip_w)
+    else
+        strip = LeftContainer:new({
+            dimen = Geom:new({ w = strip_w, h = m.height }),
+            TextWidget:new({
+                text = opts.label or "",
+                face = m.face,
+                bold = true,
+                max_width = strip_w,
+                padding = 0,
+            }),
+        })
+    end
+    strip.overlap_offset = { x, 0 }
+    table.insert(children, strip)
+
+    return OverlapGroup:new(children)
+end
+
+--- Rounded buttons in a row, SimpleUI's "segments": `selected` ones are
+--- black (the main action), the others gray.
+---@param items table { text, callback, selected, enabled }
+function Widgets.segments(items, width)
+    local gap = Screen:scaleBySize(10)
+    local height = Screen:scaleBySize(44)
+    local face = Style.face(Style.FS_BODY)
+    local w = math.floor((width - gap * (#items - 1)) / math.max(1, #items))
+
+    local row = HorizontalGroup:new({ align = "center" })
+    for i, item in ipairs(items) do
+        if i > 1 then
+            table.insert(row, HorizontalSpan:new({ width = gap }))
+        end
+        local enabled = item.enabled ~= false
+        local fgcolor = item.selected and Style.COLOR.surface or (enabled and Style.COLOR.text or Style.COLOR.text_dim)
+        local frame = FrameContainer:new({
+            bordersize = 0,
+            padding = 0,
+            margin = 0,
+            radius = Style.RADIUS,
+            background = item.selected and Style.COLOR.text or Style.COLOR.surface_flat,
+            CenterContainer:new({
+                dimen = Geom:new({ w = w, h = height }),
+                TextWidget:new({
+                    text = item.text,
+                    face = face,
+                    bold = item.selected,
+                    fgcolor = fgcolor,
+                    padding = 0,
+                    max_width = w - 2 * Widgets.PADDING,
+                }),
+            }),
+        })
+        if enabled and item.callback then
+            local button = Tappable:new({ width = w, height = height, on_tap = item.callback })
+            button[1] = frame
+            table.insert(row, button)
+        else
+            table.insert(row, frame)
+        end
+    end
+    return row
+end
+
+--- A full width row with a check box: [☑] text
+function Widgets.checkboxRow(opts)
+    local margin = Style.SIDE_MARGIN
+    local height = Screen:scaleBySize(46)
+    local icon = Screen:scaleBySize(24)
 
     local item = Tappable:new({ width = opts.width, height = height, on_tap = opts.on_tap })
     item[1] = VerticalGroup:new({
@@ -790,63 +873,55 @@ function Widgets.checkboxRow(opts)
             dimen = Geom:new({ w = opts.width, h = height - Size.line.thin }),
             HorizontalGroup:new({
                 align = "center",
-                HorizontalSpan:new({ width = 2 * padding }),
-                box,
-                HorizontalSpan:new({ width = 2 * padding }),
+                HorizontalSpan:new({ width = margin }),
+                Style.glyph(opts.checked and "check" or "uncheck", icon),
+                HorizontalSpan:new({ width = Screen:scaleBySize(12) }),
                 TextWidget:new({
                     text = opts.text,
-                    face = Widgets.faces.text,
-                    bold = opts.checked,
-                    max_width = opts.width - box_size - 5 * padding,
+                    face = Style.face(Style.FS_BODY),
+                    max_width = opts.width - 2 * margin - icon - Screen:scaleBySize(12),
+                    padding = 0,
                 }),
             }),
         }),
         LineWidget:new({
             dimen = Geom:new({ w = opts.width, h = Size.line.thin }),
-            background = Blitbuffer.COLOR_GRAY_B,
+            background = Style.COLOR.separator,
         }),
     })
 
     return item
 end
 
---- Page footer: ‹  Page 2 of 7  ›
+--- Page footer: «  ‹  Page 2 of 7  ›  »
 function Widgets.footer(opts)
     local width = opts.width
-    local padding = Widgets.PADDING
-    local height = Widgets.ICON_SIZE + 2 * padding
+    local icon = Screen:scaleBySize(26)
+    local height = icon + 2 * Widgets.PADDING
 
     if not opts.pages or opts.pages <= 1 then
         -- Nothing to turn: keep the space, so all lists have the same height
-        return VerticalGroup:new({
-            LineWidget:new({
-                dimen = Geom:new({ w = width, h = Size.line.thin }),
-                background = Blitbuffer.COLOR_GRAY_B,
-            }),
-            VerticalSpan:new({ width = height }),
-        })
+        return VerticalSpan:new({ width = height })
     end
 
-    local prev_button = Widgets.iconButton("chevron.left", opts.on_prev, nil, opts.page > 1)
-    local next_button = Widgets.iconButton("chevron.right", opts.on_next, nil, opts.page < opts.pages)
+    local function button(name, page, enabled)
+        return Widgets.iconButton(name, function() opts.on_page(page) end, icon, enabled)
+    end
+    local gap = HorizontalSpan:new({ width = 2 * Widgets.PADDING })
 
-    local text = T(_("Page %1 of %2"), opts.page, opts.pages)
-
-    return VerticalGroup:new({
-        LineWidget:new({
-            dimen = Geom:new({ w = width, h = Size.line.thin }),
-            background = Blitbuffer.COLOR_GRAY_B,
-        }),
-        CenterContainer:new({
-            dimen = Geom:new({ w = width, h = height }),
-            HorizontalGroup:new({
-                align = "center",
-                prev_button,
-                HorizontalSpan:new({ width = 4 * padding }),
-                TextWidget:new({ text = text, face = Widgets.faces.text }),
-                HorizontalSpan:new({ width = 4 * padding }),
-                next_button,
-            }),
+    return CenterContainer:new({
+        dimen = Geom:new({ w = width, h = height }),
+        HorizontalGroup:new({
+            align = "center",
+            button("chevron.first", 1, opts.page > 1),
+            gap,
+            button("chevron.left", opts.page - 1, opts.page > 1),
+            gap,
+            TextWidget:new({ text = T(_("Page %1 of %2"), opts.page, opts.pages), face = Style.face(Style.FS_DETAIL) }),
+            gap,
+            button("chevron.right", opts.page + 1, opts.page < opts.pages),
+            gap,
+            button("chevron.last", opts.pages, opts.page < opts.pages),
         }),
     })
 end
@@ -854,12 +929,12 @@ end
 --- A centered message filling `height` (loading, empty, error) with an
 --- optional button.
 function Widgets.message(opts)
-    local Button = require("ui/widget/button")
     local group = VerticalGroup:new({
         align = "center",
         TextBoxWidget:new({
             text = opts.text,
-            face = Widgets.faces.text,
+            face = Style.face(Style.FS_BODY),
+            fgcolor = Style.COLOR.text_secondary,
             width = math.floor(opts.width * 0.8),
             alignment = "center",
         }),
@@ -867,11 +942,9 @@ function Widgets.message(opts)
 
     if opts.button_text then
         table.insert(group, VerticalSpan:new({ width = 3 * Widgets.PADDING }))
-        table.insert(group, Button:new({
-            text = opts.button_text,
-            callback = opts.on_button,
-            radius = Size.radius.button,
-        }))
+        table.insert(group, Widgets.segments({
+            { text = opts.button_text, callback = opts.on_button, selected = true },
+        }, math.floor(opts.width * 0.4)))
     end
 
     return CenterContainer:new({
@@ -882,27 +955,31 @@ end
 
 --- Section title of a home row: "Recently added          See all ›"
 function Widgets.sectionHeader(opts)
-    local padding = Widgets.PADDING
+    local margin = Style.SIDE_MARGIN
     local title = TextWidget:new({
         text = opts.title,
-        face = Widgets.faces.title,
+        face = Style.face(Style.FS_BODY),
         bold = true,
         max_width = math.floor(opts.width * 0.7),
     })
-    local height = title:getSize().h + 2 * padding
+    local height = title:getSize().h + 2 * Widgets.PADDING
 
     local item = Tappable:new({ width = opts.width, height = height, on_tap = opts.on_tap })
     local content = OverlapGroup:new({
         dimen = Geom:new({ w = opts.width, h = height }),
         LeftContainer:new({
             dimen = Geom:new({ w = opts.width, h = height }),
-            HorizontalGroup:new({ HorizontalSpan:new({ width = 2 * padding }), title }),
+            HorizontalGroup:new({ HorizontalSpan:new({ width = margin }), title }),
         }),
     })
     if opts.on_tap then
         table.insert(content, RightContainer:new({
-            dimen = Geom:new({ w = opts.width - 2 * padding, h = height }),
-            TextWidget:new({ text = _("See all ›"), face = Widgets.faces.text, fgcolor = Blitbuffer.COLOR_DARK_GRAY }),
+            dimen = Geom:new({ w = opts.width - margin, h = height }),
+            TextWidget:new({
+                text = _("See all ›"),
+                face = Style.face(Style.FS_DETAIL),
+                fgcolor = Style.COLOR.text_secondary,
+            }),
         }))
     end
     item[1] = content

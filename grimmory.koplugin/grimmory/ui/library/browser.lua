@@ -9,8 +9,6 @@ afterwards in a subprocess and shown as they arrive.
 --]]
 
 local Blitbuffer = require("ffi/blitbuffer")
-local Button = require("ui/widget/button")
-local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
 local Event = require("ui/event")
 local FrameContainer = require("ui/widget/container/framecontainer")
@@ -18,10 +16,10 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan = require("ui/widget/horizontalspan")
-local IconWidget = require("ui/widget/iconwidget")
 local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local InputDialog = require("ui/widget/inputdialog")
+local LineWidget = require("ui/widget/linewidget")
 local TopContainer = require("ui/widget/container/topcontainer")
 local ProgressWidget = require("ui/widget/progresswidget")
 local ReadCollection = require("readcollection")
@@ -40,6 +38,8 @@ local T = require("ffi/util").template
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Covers = require("grimmory/ui/library/covers")
 local LibraryData = require("grimmory/ui/library/data")
+local Sheet = require("grimmory/ui/sheet")
+local Style = require("grimmory/ui/style")
 local Widgets = require("grimmory/ui/library/widgets")
 local GrimmoryLogger = require("grimmory/logger")
 
@@ -159,28 +159,34 @@ function LibraryBrowser:close()
     UIManager:close(self)
 end
 
---- While requests run (they block the UI) the header's refresh icon turns
---- into an hourglass.  Only the icon's area is refreshed, which is cheaper
---- on e-ink than a notice opening and closing; the next screen replaces it.
+--- While requests run (they block the UI) an hourglass shows in the top
+--- bar, left of "⋯".  Only its area is refreshed, which is cheaper on e-ink
+--- than a notice opening and closing; the next screen replaces it.
 function LibraryBrowser:showLoadingIndicator()
-    local area = self.refresh_icon_area
+    local area = self.loading_area
     if self.loading_shown or not area then
         return
     end
     self.loading_shown = true
 
-    local icon = IconWidget:new({
-        file = Widgets.pluginIcon("loading"),
-        width = area.w,
-        height = area.h,
-        alpha = true,
-    })
+    local icon = Style.glyph("hourglass", area.w)
     Screen.bb:paintRect(area.x, area.y, area.w, area.h, Blitbuffer.COLOR_WHITE)
     icon:paintTo(Screen.bb, area.x, area.y)
     icon:free()
 
     UIManager:setDirty(nil, "fast", area)
     UIManager:forceRePaint()
+
+    -- Usually the screen shown next paints over it; a request that does not
+    -- change the screen (e.g. from a sheet) leaves it: repaint its area then
+    UIManager:nextTick(function()
+        if self.loading_shown and not self.closed then
+            self.loading_shown = false
+            UIManager:setDirty(self, function()
+                return "fast", area
+            end)
+        end
+    end)
 end
 
 function LibraryBrowser:hideLoadingIndicator()
@@ -290,8 +296,8 @@ function LibraryBrowser:getBookGrid(content_h)
         -- About 1.15" wide covers (3 columns on a 6" screen, 5 on 10")
         local cols = math.max(3, math.min(6, math.floor(self.width / Screen:scaleByDPI(185))))
         local cell_w = math.floor(self.width / cols)
-        local title_h = Widgets.linesHeight(Widgets.faces.small, 2)
-        local cell_h = Widgets.coverHeight(cell_w - 2 * padding) + title_h + 4 * padding + Screen:scaleBySize(7)
+        local cell_h = Widgets.coverHeight(cell_w - 2 * padding) + Widgets.gridLabelHeight()
+            + 4 * padding + Screen:scaleBySize(7)
         -- Round, and let the covers shrink a little to fill the height
         local rows = math.max(1, math.floor(content_h / cell_h + 0.5))
         return { rows = rows, cols = cols, cell_w = cell_w, cell_h = math.floor(content_h / rows) }
@@ -543,38 +549,69 @@ function LibraryBrowser:getLocalPath(grimmory_id)
     return nil
 end
 
-function LibraryBrowser:headerIcons(screen)
-    local icons = {}
+--- Top bar: on a tab, [‹] tabs [search] ... [⋯]; deeper, [‹] screen title
+--- ... [⋯].  "‹" on a tab closes the library.
+function LibraryBrowser:topBar(screen)
+    local opts = {
+        width = self.width,
+        on_back = function() self:goBack() end,
+        on_more = function() self:showMoreMenu(screen) end,
+        -- Where the loading indicator is painted (the same place on every screen)
+        on_loading_area = function(area)
+            self.loading_area = area
+        end,
+    }
 
-    if screen.type ~= "details" then
-        table.insert(icons, Widgets.fileIconButton("search", function()
+    if #self.stack == 1 then
+        opts.tabs = TABS
+        opts.selected = screen.tab
+        opts.on_select = function(tab_id)
+            self:selectTab(tab_id)
+        end
+        opts.on_search = function()
             self:showSearch(screen)
-        end))
+        end
+    else
+        opts.label = screen.type == "details" and screen.book.title or screen.title
     end
+
+    return Widgets.topBar(opts)
+end
+
+--- The "⋯" menu: layout, refresh, close
+function LibraryBrowser:showMoreMenu(screen)
+    local sections = {}
 
     if screen.type == "books" or screen.type == "home" or screen.with_covers then
-        local other = self.layout == "grid" and "list" or "grid"
-        table.insert(icons, Widgets.fileIconButton(other, function()
-            self:setLayout(other)
-        end))
+        table.insert(sections, {
+            type = "segments",
+            items = {
+                {
+                    text = _("Grid"),
+                    selected = self.layout == "grid",
+                    callback = function() self:setLayout("grid") end,
+                },
+                {
+                    text = _("List"),
+                    selected = self.layout == "list",
+                    callback = function() self:setLayout("list") end,
+                },
+            },
+        })
     end
 
-    -- Where it is painted is where the loading indicator goes (the same
-    -- place on every screen: it is right aligned, before "close")
-    table.insert(icons, Widgets.PaintTracker:new({
-        Widgets.fileIconButton("refresh", function()
-            self:refresh()
-        end),
-        on_paint = function(area)
-            self.refresh_icon_area = area
-        end,
+    table.insert(sections, Sheet.list({
+        { text = _("Refresh"), sui_icon = "update", callback = function() self:refresh() end },
+        { text = _("Close library"), sui_icon = "close", callback = function() self:close() end },
     }))
 
-    table.insert(icons, Widgets.iconButton("close", function()
-        self:close()
-    end))
-
-    return icons
+    Sheet.show({
+        title = _("Grimmory Library"),
+        icon = "library",
+        fit_width = true,
+        auto_close = true,
+        sections = sections,
+    })
 end
 
 --- Rebuild the whole screen for the current state.  Loads what is missing
@@ -585,24 +622,7 @@ function LibraryBrowser:show()
     local screen = self:current()
     local parts = VerticalGroup:new({ align = "left" })
 
-    table.insert(parts, Widgets.header({
-        width = self.width,
-        title = screen.title,
-        subtitle = screen.subtitle,
-        on_back = #self.stack > 1 and function() self:goBack() end or nil,
-        icons = self:headerIcons(screen),
-    }))
-
-    if #self.stack == 1 then
-        table.insert(parts, Widgets.tabStrip({
-            width = self.width,
-            tabs = TABS,
-            selected = screen.tab,
-            on_select = function(tab_id)
-                self:selectTab(tab_id)
-            end,
-        }))
-    end
+    table.insert(parts, self:topBar(screen))
 
     if screen.source then
         table.insert(parts, self:downloadSourceBar(screen.source))
@@ -647,8 +667,7 @@ function LibraryBrowser:show()
             width = self.width,
             page = screen.page,
             pages = screen.pages or 1,
-            on_prev = function() self:turnPage(-1) end,
-            on_next = function() self:turnPage(1) end,
+            on_page = function(page) self:turnPage(page - screen.page) end,
         }))
     end
 
@@ -685,21 +704,7 @@ function LibraryBrowser:showMessage(screen, content_h, text, retry)
     })
 
     local parts = VerticalGroup:new({ align = "left" })
-    table.insert(parts, Widgets.header({
-        width = self.width,
-        title = screen.title,
-        subtitle = screen.subtitle,
-        on_back = #self.stack > 1 and function() self:goBack() end or nil,
-        icons = self:headerIcons(screen),
-    }))
-    if #self.stack == 1 then
-        table.insert(parts, Widgets.tabStrip({
-            width = self.width,
-            tabs = TABS,
-            selected = screen.tab,
-            on_select = function(tab_id) self:selectTab(tab_id) end,
-        }))
-    end
+    table.insert(parts, self:topBar(screen))
     table.insert(parts, message)
     self:hideLoadingIndicator()
 
@@ -833,9 +838,11 @@ function LibraryBrowser:entryWidget(screen, entry, grid)
             width = grid.cell_w,
             height = grid.cell_h,
             on_device = self:getLocalPath(entry.id) ~= nil,
-            title_lines = 2,
             on_tap = function()
                 self:openDetails(entry)
+            end,
+            on_hold = function()
+                self:showBookSheet(entry)
             end,
         }
         if self.layout == "grid" then
@@ -871,8 +878,8 @@ function LibraryBrowser:entryWidget(screen, entry, grid)
         self:push(self:collectionBooksScreen(kind, collection))
     end
 
-    local function toggle()
-        self:toggleDownloadSource(kind, collection)
+    local function actions()
+        self:showCollectionSheet(kind, collection)
     end
 
     if grid.cols > 1 then
@@ -883,7 +890,7 @@ function LibraryBrowser:entryWidget(screen, entry, grid)
             subtitle = (is_source and "⇩ " or "") .. T(_("%1 books"), collection.book_count or "?"),
             cover = cover,
             on_tap = open,
-            on_hold = toggle,
+            on_hold = actions,
         })
     end
 
@@ -895,7 +902,7 @@ function LibraryBrowser:entryWidget(screen, entry, grid)
         badge = is_source and _("⇩ Auto") or nil,
         cover = cover,
         on_tap = open,
-        on_hold = toggle,
+        on_hold = actions,
     })
 end
 
@@ -907,7 +914,7 @@ function LibraryBrowser:homeContent(screen, content_h)
     local max_sections = HOME_SECTIONS
 
     -- Size the covers so that three rows fit
-    local title_h = Widgets.linesHeight(Widgets.faces.small, 2)
+    local title_h = Widgets.gridLabelHeight()
     local cell_h = math.floor(content_h / max_sections) - section_header_h
     local cover_h = cell_h - title_h - 4 * padding - Screen:scaleBySize(5)
     local cell_w = Widgets.coverWidth(cover_h) + 2 * padding
@@ -984,10 +991,12 @@ function LibraryBrowser:homeContent(screen, content_h)
             local cell = Widgets.bookGridCell(book, {
                 width = cell_w,
                 height = cell_h,
-                title_lines = 2,
                 on_device = self:getLocalPath(book.id) ~= nil,
                 on_tap = function()
                     self:openDetails(book)
+                end,
+                on_hold = function()
+                    self:showBookSheet(book)
                 end,
             })
             table.insert(row, cell)
@@ -1119,14 +1128,19 @@ function LibraryBrowser:isSeriesInProgress(series_name)
     return in_progress
 end
 
-function LibraryBrowser:smartDownloadBar(collection)
+--- Whether smart download is on for the series
+function LibraryBrowser:isSmartDownloadOn(collection)
     local in_progress = false
     if self.settings:getSmartDownloadMode() == "in_progress"
         and self.settings:getSmartDownloadSeries(collection.name) == nil then
         in_progress = self:isSeriesInProgress(collection.name)
     end
 
-    local checked = self.settings:isSmartDownloadSeries(collection.name, in_progress)
+    return self.settings:isSmartDownloadSeries(collection.name, in_progress)
+end
+
+function LibraryBrowser:smartDownloadBar(collection)
+    local checked = self:isSmartDownloadOn(collection)
 
     return Widgets.checkboxRow({
         width = self.width,
@@ -1157,6 +1171,103 @@ function LibraryBrowser:toggleSmartDownload(collection, checked)
     end
 
     self:show()
+end
+
+-------------------------------------------------------------------------------
+-- Long press sheets
+-------------------------------------------------------------------------------
+
+--- Actions for a book: read / download, details, series, delete
+---@param book LibraryBook
+function LibraryBrowser:showBookSheet(book)
+    local local_path = self:getLocalPath(book.id)
+
+    local function downloadFromDetails(open_after)
+        self:openDetails(book)
+        self:downloadBook(self:current(), open_after)
+    end
+
+    local tiles = {}
+    if local_path then
+        table.insert(tiles, { text = _("Read"), sui_icon = "book_open", callback = function()
+            self:openBook(local_path)
+        end })
+    elseif book.primary_file_name then
+        table.insert(tiles, { text = _("Download & read"), sui_icon = "book_open", callback = function()
+            downloadFromDetails(true)
+        end })
+    end
+    table.insert(tiles, { text = _("Details"), sui_icon = "info", callback = function()
+        self:openDetails(book)
+    end })
+    if book.series_name then
+        table.insert(tiles, { text = _("Series"), sui_icon = "series", callback = function()
+            self:push(self:collectionBooksScreen("series", { name = book.series_name }))
+        end })
+    end
+
+    local rows = {}
+    if local_path then
+        table.insert(rows, { text = _("Delete from device"), sui_icon = "delete", callback = function()
+            self:confirmDelete({ book = book }, local_path)
+        end })
+    elseif book.primary_file_name then
+        table.insert(rows, { text = _("Download only"), sui_icon = "import", callback = function()
+            downloadFromDetails(false)
+        end })
+    end
+
+    local message = {}
+    if #book.authors > 0 then
+        table.insert(message, table.concat(book.authors, ", "))
+    end
+    table.insert(message, Widgets.seriesText(book))
+
+    Sheet.show({
+        title = book.title,
+        icon = "book_open",
+        message = table.concat(message, " · "),
+        auto_close = true,
+        sections = { { type = "tiles", items = tiles }, Sheet.list(rows) },
+    })
+end
+
+--- Actions for a series / shelf / library: open, download settings
+function LibraryBrowser:showCollectionSheet(kind, collection)
+    local id_or_name = kind == "series" and collection.name or collection.id
+
+    local rows = {
+        { text = _("Show books"), sui_icon = "list", callback = function()
+            self:push(self:collectionBooksScreen(kind, collection))
+        end },
+        {
+            text = _("Download with automatic sync"),
+            sui_icon = "import",
+            checked = self.settings:isDownloadSource(kind, id_or_name),
+            callback = function()
+                self:toggleDownloadSource(kind, collection)
+            end,
+        },
+    }
+
+    if kind == "series" and self.settings:getSmartDownloadMode() ~= "off" then
+        local checked = self:isSmartDownloadOn(collection)
+        table.insert(rows, {
+            text = _("Smart download: keep the next volumes"),
+            sui_icon = "series",
+            checked = checked,
+            callback = function()
+                self:toggleSmartDownload(collection, checked)
+            end,
+        })
+    end
+
+    Sheet.show({
+        title = collection.name,
+        icon = kind == "series" and "series" or "library",
+        auto_close = true,
+        sections = { Sheet.list(rows) },
+    })
 end
 
 -------------------------------------------------------------------------------
@@ -1268,23 +1379,24 @@ function LibraryBrowser:detailsContent(screen, content_h)
     })
     self.visible_covers = { cover }
 
-    local info_w = width - cover_w - 5 * padding
+    local margin = Style.SIDE_MARGIN
+    local info_w = width - cover_w - 2 * margin - 2 * padding
     local info = VerticalGroup:new({
         align = "left",
         TextBoxWidget:new({
             text = book.title,
-            face = Widgets.faces.header,
+            face = Style.face(Style.FS_TITLE),
             bold = true,
             width = info_w,
         }),
     })
 
-    local function add_line(text, face, color)
+    local function add_line(text, size, color)
         if text and text ~= "" then
             table.insert(info, VerticalSpan:new({ width = math.floor(padding / 2) }))
             table.insert(info, TextBoxWidget:new({
                 text = text,
-                face = face or Widgets.faces.text,
+                face = Style.face(size),
                 width = info_w,
                 fgcolor = color,
             }))
@@ -1292,9 +1404,9 @@ function LibraryBrowser:detailsContent(screen, content_h)
     end
 
     if #book.authors > 0 then
-        add_line(table.concat(book.authors, ", "), Widgets.faces.title)
+        add_line(table.concat(book.authors, ", "), Style.FS_BODY)
     end
-    add_line(Widgets.seriesText(book), Widgets.faces.text, Blitbuffer.COLOR_DARK_GRAY)
+    add_line(Widgets.seriesText(book), Style.FS_DETAIL, Style.COLOR.text_secondary)
 
     local facts = {}
     if book.primary_file_type then
@@ -1307,10 +1419,10 @@ function LibraryBrowser:detailsContent(screen, content_h)
     if book.published_date then
         table.insert(facts, book.published_date:sub(1, 4))
     end
-    add_line(table.concat(facts, " · "), Widgets.faces.small, Blitbuffer.COLOR_DARK_GRAY)
+    add_line(table.concat(facts, " · "), Style.FS_DETAIL, Style.COLOR.text_secondary)
 
     if screen.detail and screen.detail.library_name then
-        add_line(T(_("Library: %1"), screen.detail.library_name), Widgets.faces.small, Blitbuffer.COLOR_DARK_GRAY)
+        add_line(T(_("Library: %1"), screen.detail.library_name), Style.FS_DETAIL, Style.COLOR.text_secondary)
     end
 
     if book.read_progress and book.read_progress > 0 then
@@ -1319,44 +1431,55 @@ function LibraryBrowser:detailsContent(screen, content_h)
             align = "center",
             ProgressWidget:new({
                 width = math.floor(info_w * 0.7),
-                height = Screen:scaleBySize(9),
+                height = Screen:scaleBySize(8),
                 percentage = math.min(1, book.read_progress / 100),
                 margin_h = 0,
                 margin_v = 0,
+                radius = Screen:scaleBySize(4),
+                bordersize = 0,
+                bgcolor = Style.COLOR.track,
+                fillcolor = Style.COLOR.text,
             }),
             TextWidget:new({
                 text = string.format("  %d%%", math.floor(book.read_progress + 0.5)),
-                face = Widgets.faces.text,
+                face = Style.face(Style.FS_DETAIL),
             }),
         }))
     end
 
     if local_path then
-        add_line(_("✓ On this device"), Widgets.faces.text)
+        table.insert(info, VerticalSpan:new({ width = padding }))
+        local icon = Screen:scaleBySize(20)
+        table.insert(info, HorizontalGroup:new({
+            align = "center",
+            Style.glyph("tick", icon),
+            HorizontalSpan:new({ width = padding }),
+            TextWidget:new({ text = _("On this device"), face = Style.face(Style.FS_DETAIL) }),
+        }))
     end
 
-    -- Primary action: one tap to read (a progress bar while downloading)
-    local button_w = width - 4 * padding
+    -- Actions as SimpleUI's segments: the main one black, a progress bar
+    -- in its place while downloading
+    local button_w = width - 2 * margin
     local primary
 
     if screen.downloading then
         primary = self:downloadProgressWidget(screen, button_w)
     else
-        primary = Button:new({
-            text = local_path and _("Read") or _("Download & read"),
-            width = button_w,
-            text_font_size = 22,
-            radius = Size.radius.button,
-            bordersize = Size.border.thick,
-            enabled = local_path ~= nil or book.primary_file_name ~= nil,
-            callback = function()
-                if local_path then
-                    self:openBook(local_path)
-                else
-                    self:downloadBook(screen, true)
-                end
-            end,
-        })
+        primary = Widgets.segments({
+            {
+                text = local_path and _("Read") or _("Download & read"),
+                selected = true,
+                enabled = local_path ~= nil or book.primary_file_name ~= nil,
+                callback = function()
+                    if local_path then
+                        self:openBook(local_path)
+                    else
+                        self:downloadBook(screen, true)
+                    end
+                end,
+            },
+        }, button_w)
     end
 
     local secondary_buttons = {}
@@ -1374,32 +1497,16 @@ function LibraryBrowser:detailsContent(screen, content_h)
     end
     if book.series_name then
         table.insert(secondary_buttons, {
-            text = _("Series ›"),
+            text = _("Series"),
             callback = function()
                 self:push(self:collectionBooksScreen("series", { name = book.series_name }))
             end,
         })
     end
 
-    local secondary = HorizontalGroup:new({})
-    local secondary_w = math.floor((button_w - (#secondary_buttons - 1) * padding) / math.max(1, #secondary_buttons))
-    for i, spec in ipairs(secondary_buttons) do
-        if i > 1 then
-            table.insert(secondary, HorizontalSpan:new({ width = padding }))
-        end
-        table.insert(secondary, Button:new({
-            text = spec.text,
-            width = secondary_w,
-            enabled = spec.enabled ~= false,
-            radius = Size.radius.button,
-            text_font_size = 18,
-            callback = spec.callback,
-        }))
-    end
-
     local top = HorizontalGroup:new({
         align = "top",
-        HorizontalSpan:new({ width = 2 * padding }),
+        HorizontalSpan:new({ width = margin }),
         cover,
         HorizontalSpan:new({ width = 2 * padding }),
         info,
@@ -1410,14 +1517,25 @@ function LibraryBrowser:detailsContent(screen, content_h)
         VerticalSpan:new({ width = 2 * padding }),
         top,
         VerticalSpan:new({ width = 3 * padding }),
-        HorizontalGroup:new({ HorizontalSpan:new({ width = 2 * padding }), primary }),
+        HorizontalGroup:new({ HorizontalSpan:new({ width = margin }), primary }),
     })
 
     if #secondary_buttons > 0 then
-        table.insert(body, VerticalSpan:new({ width = padding }))
-        table.insert(body, HorizontalGroup:new({ HorizontalSpan:new({ width = 2 * padding }), secondary }))
+        table.insert(body, VerticalSpan:new({ width = Screen:scaleBySize(10) }))
+        table.insert(body, HorizontalGroup:new({
+            HorizontalSpan:new({ width = margin }),
+            Widgets.segments(secondary_buttons, button_w),
+        }))
     end
 
+    table.insert(body, VerticalSpan:new({ width = 2 * padding }))
+    table.insert(body, HorizontalGroup:new({
+        HorizontalSpan:new({ width = margin }),
+        LineWidget:new({
+            dimen = Geom:new({ w = button_w, h = Size.line.thin }),
+            background = Style.COLOR.separator,
+        }),
+    }))
     table.insert(body, VerticalSpan:new({ width = 2 * padding }))
 
     local description_h = content_h - body:getSize().h - padding
@@ -1432,11 +1550,11 @@ function LibraryBrowser:detailsContent(screen, content_h)
         end
 
         table.insert(body, HorizontalGroup:new({
-            HorizontalSpan:new({ width = 2 * padding }),
+            HorizontalSpan:new({ width = margin }),
             ScrollTextWidget:new({
                 text = description,
-                face = Widgets.faces.text,
-                width = width - 4 * padding,
+                face = Style.face(Style.FS_DETAIL + 1),
+                width = button_w,
                 height = description_h,
                 dialog = self,
             }),
@@ -1594,9 +1712,11 @@ end
 function LibraryBrowser:confirmDelete(screen, path)
     local book = screen.book
 
-    UIManager:show(ConfirmBox:new({
-        text = T(
-            _("Delete “%1” from this device?\n\nIf it is in a download source, the next sync downloads it again."),
+    Sheet.confirm({
+        title = _("Delete from device?"),
+        icon = "delete",
+        message = T(
+            _("“%1” is removed from this device. If it is in a download source, the next sync downloads it again."),
             book.title
         ),
         ok_text = _("Delete"),
@@ -1609,7 +1729,7 @@ function LibraryBrowser:confirmDelete(screen, path)
 
             self:show()
         end,
-    }))
+    })
 end
 
 return LibraryBrowser

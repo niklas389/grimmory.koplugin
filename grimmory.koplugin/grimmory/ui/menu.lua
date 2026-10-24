@@ -3,10 +3,10 @@ local T = require("ffi/util").template
 
 local Device = require("device")
 local Event = require("ui/event")
-local ConfirmBox = require("ui/widget/confirmbox")
 local UIManager = require("ui/uimanager")
 
 local PluginMetadata = require("grimmory/plugin_metadata")
+local Sheet = require("grimmory/ui/sheet")
 ---@class GrimmoryMenu
 ---@field ui any This is a ReaderUI
 ---@field settings GrimmorySettings
@@ -521,12 +521,15 @@ function GrimmoryMenu:getTopMenu()
             text = _("Interrupt Current Sync"),
             callback = function()
                 if self.interrupt_sync ~= nil then
-                    UIManager:show(ConfirmBox:new({
-                        text = _("Are you sure you want to interrupt synchronization?"),
+                    Sheet.confirm({
+                        title = _("Interrupt sync"),
+                        icon = "update",
+                        message = _("Are you sure you want to interrupt synchronization?"),
+                        ok_text = _("Interrupt"),
                         ok_callback = function()
                             pcall(self.interrupt_sync)
                         end,
-                    }))
+                    })
                 end
             end,
             separator = true,

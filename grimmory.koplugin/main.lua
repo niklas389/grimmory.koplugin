@@ -196,6 +196,8 @@ function Grimmory:init()
             return {
                 {
                     text = _("Sync with Grimmory"),
+                    -- Icon in SimpleUI's book sheet (KOReader ignores it)
+                    sui_icon = "update",
                     callback = function()
                         local file_chooser = FileManager.instance.file_chooser
 
@@ -208,6 +210,7 @@ function Grimmory:init()
                 },
                 {
                     text = _("Reload from Grimmory"),
+                    sui_icon = "import",
                     callback = function()
                         local file_chooser = FileManager.instance.file_chooser
 
