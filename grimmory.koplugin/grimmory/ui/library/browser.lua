@@ -18,6 +18,7 @@ local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan = require("ui/widget/horizontalspan")
 local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
+local IconWidget = require("ui/widget/iconwidget")
 local InputDialog = require("ui/widget/inputdialog")
 local LineWidget = require("ui/widget/linewidget")
 local TopContainer = require("ui/widget/container/topcontainer")
@@ -160,17 +161,27 @@ function LibraryBrowser:close()
     UIManager:close(self)
 end
 
---- While requests run (they block the UI) an hourglass shows in the top
+--- While requests run (they block the UI) a cloud shows in the top
 --- bar, left of "⋯".  Only its area is refreshed, which is cheaper on e-ink
 --- than a notice opening and closing; the next screen replaces it.
 function LibraryBrowser:showLoadingIndicator()
-    local area = self.loading_area
-    if self.loading_shown or not area then
+    local slot = self.loading_area
+    if self.loading_shown or not slot then
         return
     end
     self.loading_shown = true
 
-    local icon = Style.glyph("hourglass", area.w)
+    -- The cloud of the sync indicator (Material Symbols, see icons/), a bit
+    -- larger than its slot: the drawing does not fill its box
+    local size = math.floor(slot.w * 1.3)
+    local offset = math.floor((size - slot.w) / 2)
+    local area = Geom:new({ x = slot.x - offset, y = slot.y - offset, w = size, h = size })
+    local icon = IconWidget:new({
+        file = Widgets.pluginIcon("cloud_download"),
+        width = size,
+        height = size,
+        alpha = true,
+    })
     Screen.bb:paintRect(area.x, area.y, area.w, area.h, Blitbuffer.COLOR_WHITE)
     icon:paintTo(Screen.bb, area.x, area.y)
     icon:free()
@@ -307,14 +318,21 @@ end
 -- Layout
 -------------------------------------------------------------------------------
 
+--- Space left and right of the cover grids: the covers (inset by the cells'
+--- padding) line up with the top bar's side margin.
+function LibraryBrowser:gridInset()
+    return math.max(0, Style.SIDE_MARGIN - Widgets.PADDING)
+end
+
 --- Rows and columns of a book page in the current layout.
 function LibraryBrowser:getBookGrid(content_h)
     local padding = Widgets.PADDING
 
     if self.layout == "grid" then
+        local grid_w = self.width - 2 * self:gridInset()
         -- About 1.15" wide covers (3 columns on a 6" screen, 5 on 10")
-        local cols = math.max(3, math.min(6, math.floor(self.width / Screen:scaleByDPI(185))))
-        local cell_w = math.floor(self.width / cols)
+        local cols = math.max(3, math.min(6, math.floor(grid_w / Screen:scaleByDPI(185))))
+        local cell_w = math.floor(grid_w / cols)
         local cell_h = Widgets.coverHeight(cell_w - 2 * padding) + Widgets.gridLabelHeight()
             + 4 * padding + Screen:scaleBySize(7)
         -- Round, and let the covers shrink a little to fill the height
@@ -839,7 +857,7 @@ function LibraryBrowser:pageWidget(screen, grid)
             table.insert(rows, widget)
         else
             if (index - 1) % grid.cols == 0 then
-                row = HorizontalGroup:new({ align = "top" })
+                row = HorizontalGroup:new({ align = "top", HorizontalSpan:new({ width = self:gridInset() }) })
                 table.insert(rows, row)
             end
             table.insert(row, widget)
@@ -952,8 +970,9 @@ function LibraryBrowser:homeContent(screen, content_h)
     local cell_h = math.floor(content_h / max_sections) - section_header_h
     local cover_h = cell_h - title_h - 4 * padding - Screen:scaleBySize(5)
     local cell_w = Widgets.coverWidth(cover_h) + 2 * padding
-    local cols = math.max(3, math.floor(self.width / cell_w))
-    cell_w = math.floor(self.width / cols)
+    local grid_w = self.width - 2 * self:gridInset()
+    local cols = math.max(3, math.floor(grid_w / cell_w))
+    cell_w = math.floor(grid_w / cols)
 
     if not screen.sections then
         local definitions = self:getHomeSections(cols)
@@ -1019,7 +1038,7 @@ function LibraryBrowser:homeContent(screen, content_h)
             end,
         }))
 
-        local row = HorizontalGroup:new({ align = "top" })
+        local row = HorizontalGroup:new({ align = "top", HorizontalSpan:new({ width = self:gridInset() }) })
         for i = 1, math.min(cols, #section.books) do
             local book = section.books[i]
             local cell = Widgets.bookGridCell(book, {
