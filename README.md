@@ -24,22 +24,34 @@ The Grimmory plugin is under "Tools" (🛠️) for configuration.
 "Grimmory: Browse Library") opens your Grimmory library:
 
 - **Tabs**: Home, Books, Series, Shelves (including magic shelves) and
-  Libraries, one tap apart.  Home shows "Continue Reading", "Recently Added"
-  and the shelves, libraries and series the sync downloads.
-- **Covers**: books are shown as a cover list or a cover grid (the button in
-  the title bar switches; the choice is remembered).  Covers load in the
-  background and are kept on the device.
+  Libraries, one tap apart in the top bar.  Home shows "Continue Reading",
+  "Recently Added" and the shelves, libraries and series the sync downloads.
+  "‹" goes back (on a tab it closes the library); "⋯" switches between cover
+  grid and cover list, refreshes and closes.
+- **Covers**: books are shown as a cover list or a cover grid (the choice is
+  remembered).  Covers load in the background and are kept on the device.
 - **Book page**: tap a book for its cover, details and description, and read
   it with one tap ("Download & read").  Books downloaded here stay on the
   device and are synced.
+- **Hold** a book for its actions (read, download, details, series, delete),
+  or a series, shelf or library for its download settings.
+- **Download several books**: "⋯" -> "Select books to download" (or hold a
+  book), tick the books, on any page of the list, and tap "Download".  They
+  are downloaded one after another, with the progress at the bottom.
 - **Search** books (or series, in the Series tab) with the magnifier.
 - **Download with automatic sync**: tick it inside a shelf, library or series
   (or hold its entry) to let the sync download its books.
 - **Smart download**: tick it inside a series to keep its next volumes on
   the device (see below).
 
+The browser and the plugin's dialogs follow the look of
+[SimpleUI](https://github.com/doctorhetfield-cmd/simpleui.koplugin) 3.  With
+SimpleUI installed, the dialogs are SimpleUI's own action sheets and the
+back, search, menu and page buttons use SimpleUI's icons (also the ones
+chosen in its settings); without it, KOReader's dialogs and icons.
+
 Each page is loaded with exactly the books it shows, and loaded pages are
-kept for 10 minutes (the refresh button reloads).  A book downloaded here
+kept for 10 minutes ("⋯" -> Refresh reloads).  A book downloaded here
 opens where it was left on the server, also when it was read in Grimmory's
 own reader.  The browser needs a
 Grimmory version with the app API (`/api/v1/app`).

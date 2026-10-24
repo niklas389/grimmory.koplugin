@@ -1,8 +1,6 @@
 local _ = require("gettext")
 local T = require("ffi/util").template
 
-local ButtonDialog = require("ui/widget/buttondialog")
-local ConfirmBox = require("ui/widget/confirmbox")
 local Event = require("ui/event")
 local InfoMessage = require("ui/widget/infomessage")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
@@ -12,6 +10,7 @@ local Screen = require("device").screen
 local UIManager = require("ui/uimanager")
 local PathChooser = require("ui/widget/pathchooser")
 local ProgressbarDialog = require("ui/widget/progressbardialog")
+local Sheet = require("grimmory/ui/sheet")
 local Size = require("ui/size")
 
 
@@ -497,55 +496,52 @@ end
 
 ---@param check_error string | nil Why the check failed, if it did
 function DialogManager:showPluginUpdateDialog(check_error)
-    local dialog
     local latest_version = self.updater:getLatestReleaseVersion()
     local is_update_available = self.updater:isUpdateAvailable()
 
-    local update_button_text = _("No update available")
-    local title = _("Grimmory.koplugin is currently up-to-date.")
+    local message = _("Grimmory.koplugin is currently up-to-date.")
 
     if check_error then
         -- Don't claim to be up-to-date when the check itself failed.
-        title = T(_("Could not check for updates.\n%1"), check_error)
+        message = T(_("Could not check for updates.\n%1"), check_error)
     end
 
     if is_update_available then
-        update_button_text = T(_("Update to %1"), latest_version)
-        title = _("Update available for Grimmory.koplugin.")
+        message = _("Update available for Grimmory.koplugin.")
     end
 
-    dialog = ButtonDialog:new({
-        title = title,
-        buttons = {
+    local sections = {}
+    if is_update_available then
+        table.insert(sections, Sheet.list({
             {
-                {
-                    text = update_button_text,
-                    enabled = is_update_available,
-                    callback = function()
-                        UIManager:close(dialog)
-                        self:showPluginUpdater()
-                    end,
-                },
-                {
-                    text = _("Check Again"),
-                    callback = function()
-                        UIManager:close(dialog)
-                        self:showPluginUpdateCheck()
-                    end,
-                },
+                text = T(_("Update to %1"), latest_version),
+                sui_icon = "update",
+                callback = function()
+                    self:showPluginUpdater()
+                end,
             },
+        }))
+    end
+    table.insert(sections, {
+        type = "segments",
+        items = {
+            { text = _("Close") },
             {
-                {
-                    text = _("Close"),
-                    callback = function()
-                        UIManager:close(dialog)
-                    end,
-                },
+                text = _("Check Again"),
+                callback = function()
+                    self:showPluginUpdateCheck()
+                end,
             },
         },
     })
 
-    UIManager:show(dialog)
+    Sheet.show({
+        title = _("Plugin update"),
+        icon = "plugin",
+        message = message,
+        auto_close = true,
+        sections = sections,
+    })
 end
 
 function DialogManager:showPluginUpdater()
@@ -631,17 +627,18 @@ function DialogManager:showApplyProgressConfirmation(progress)
     -- Reading Progress is Available from Grimmory
     -- Go to page 25 from 25 minutes ago?
 
-    local dialog = ConfirmBox:new({
-        text = T(
+    Sheet.confirm({
+        title = _("Reading position"),
+        icon = "book_open",
+        message = T(
             _("Go to latest location %1% from Grimmory?"),
             string.format("%.1f", tonumber(progress.end_progress) or 0)
         ),
+        ok_text = _("Go to position"),
         ok_callback = function()
             self.reading_progress_manager:applyProgress(progress)
         end,
     })
-
-    UIManager:show(dialog)
 end
 
 return DialogManager
