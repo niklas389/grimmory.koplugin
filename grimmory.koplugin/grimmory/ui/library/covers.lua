@@ -71,9 +71,14 @@ function Covers.clear()
     return files, bytes
 end
 
---- Download the given covers in a subprocess, so the browser stays usable
---- while they load (each one is an HTTPS request).  `on_cover(book_id)` is
---- called in the UI process as each one arrives.
+-- Covers downloaded at the same time (one subprocess and connection each):
+-- over the Internet most of the time per cover is waiting for the server
+local DOWNLOAD_WORKERS = 3
+
+--- Download the given covers in subprocesses, so the browser stays usable
+--- while they load.  They are shared out in turns, so the first covers of
+--- the page come first.  `on_cover(book_id)` is called in the UI process as
+--- each one arrives.
 ---@param executor GrimmoryExecutor
 ---@param api GrimmoryAPI
 ---@param requests { id: number, path: string, full: boolean|nil }[]
@@ -81,7 +86,7 @@ end
 ---@return function cancel
 function Covers.download(executor, api, requests, on_cover)
     local cancelled = false
-    local terminate_subprocess = nil
+    local terminators = {}
 
     if #requests == 0 then
         return function() end
@@ -89,38 +94,50 @@ function Covers.download(executor, api, requests, on_cover)
 
     util.makePath(COVER_DIRECTORY)
 
-    executor:background(function(run, terminate)
-        terminate_subprocess = terminate
+    local shares = {}
+    for index, request in ipairs(requests) do
+        local worker = (index - 1) % DOWNLOAD_WORKERS + 1
+        shares[worker] = shares[worker] or {}
+        table.insert(shares[worker], request)
+    end
 
-        local ok, result = run(
-            function(report)
-                for _, request in ipairs(requests) do
-                    local partial_path = request.path .. ".part"
-                    local downloaded = api:downloadThumbnail(request.id, partial_path, request.full)
+    for _, share in ipairs(shares) do
+        executor:background(function(run, terminate)
+            if cancelled then
+                return
+            end
+            table.insert(terminators, terminate)
 
-                    if downloaded and os.rename(partial_path, request.path) then
-                        report({ cover_id = request.id })
-                    else
-                        os.remove(partial_path)
+            local ok, result = run(
+                function(report)
+                    for _, request in ipairs(share) do
+                        local partial_path = request.path .. ".part"
+                        local downloaded = api:downloadThumbnail(request.id, partial_path, request.full)
+
+                        if downloaded and os.rename(partial_path, request.path) then
+                            report({ cover_id = request.id })
+                        else
+                            os.remove(partial_path)
+                        end
+                    end
+                end,
+                function(state)
+                    if not cancelled and type(state) == "table" and state.cover_id then
+                        on_cover(state.cover_id)
                     end
                 end
-            end,
-            function(state)
-                if not cancelled and type(state) == "table" and state.cover_id then
-                    on_cover(state.cover_id)
-                end
-            end
-        )
+            )
 
-        if not ok and not cancelled then
-            logger:warn("Cover download failed:", result)
-        end
-    end, false)
+            if not ok and not cancelled then
+                logger:warn("Cover download failed:", result)
+            end
+        end, false)
+    end
 
     return function()
         cancelled = true
-        if terminate_subprocess then
-            terminate_subprocess()
+        for _, terminate in ipairs(terminators) do
+            terminate()
         end
     end
 end

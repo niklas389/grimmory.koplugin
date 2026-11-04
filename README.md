@@ -50,10 +50,12 @@ SimpleUI installed, the dialogs are SimpleUI's own action sheets and the
 back, search, menu and page buttons use SimpleUI's icons (also the ones
 chosen in its settings); without it, KOReader's dialogs and icons.
 
-Each page is loaded with exactly the books it shows, and loaded pages are
-kept for 10 minutes ("⋯" -> Refresh reloads).  A book downloaded here
-opens where it was left on the server, also when it was read in Grimmory's
-own reader.  The browser needs a
+Each page is loaded with exactly the books it shows; covers load three at a
+time, and connections to the server are kept open between requests (no new
+connection and TLS handshake for every cover), which matters most over the
+Internet.  Loaded pages are kept for 10 minutes ("⋯" -> Refresh reloads).
+A book downloaded here opens where it was left on the server, also when it
+was read in Grimmory's own reader.  The browser needs a
 Grimmory version with the app API (`/api/v1/app`).
 
 ## Menu
