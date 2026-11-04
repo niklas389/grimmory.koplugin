@@ -68,6 +68,17 @@ Grimmory version with the app API (`/api/v1/app`).
 - **Library Browser**: cover grid or list, clearing the browser's cache
 - **Network**: turning WiFi on when needed
 
+## Custom HTTP headers
+
+**Custom HTTP Headers** (in the plugin's menu, below **Server Connection**)
+adds headers to every request to the Grimmory server, e.g. a secret header
+that lets the plugin past an authentication proxy (Traefik with Authentik
+forward auth, Cloudflare Access service tokens).  Values are shown masked.
+
+Headers the plugin sets itself cannot be replaced: `Authorization` (Grimmory's
+own login), `Host`, `Content-Type`, `Content-Length`, `Connection`,
+`Transfer-Encoding`, `X-Auth-User` and `X-Auth-Key` (KOReader sync).
+
 ## Book information from Grimmory
 
 Title, authors, series and number, language, tags (Grimmory's categories and

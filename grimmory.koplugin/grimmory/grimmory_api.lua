@@ -374,12 +374,22 @@ function GrimmoryAPI:getToken(base_uri, username, password)
 end
 
 
-function GrimmoryAPI:rawRequest(method, uri, data, headers, sink)
-    headers = headers or {}
-
-    headers["User-Agent"] = getUserAgent()
-
+function GrimmoryAPI:rawRequest(method, uri, data, request_headers, sink)
+    -- The user's custom headers (e.g. for a reverse proxy) first: the
+    -- request's own headers (Grimmory's login, ...) must win over them
+    local headers = { ["User-Agent"] = getUserAgent() }
     for key, value in pairs(self.settings:getExtraHeaders()) do
+        if self.settings.validateHeader(key, value) then
+            headers[key] = value
+        end
+    end
+    for key, value in pairs(request_headers or {}) do
+        -- Case-insensitive, like HTTP: drop a custom header of the same name
+        for existing in pairs(headers) do
+            if existing:lower() == key:lower() then
+                headers[existing] = nil
+            end
+        end
         headers[key] = value
     end
 

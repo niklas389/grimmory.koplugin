@@ -212,6 +212,77 @@ function GrimmorySettings:setExtraHeaders(headers)
     self:write()
 end
 
+local function trim(text)
+    return (text:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- Headers the plugin sets itself (Grimmory's login, KOReader sync, the
+-- request body), lower case: a custom header must not replace them
+local RESERVED_HEADERS = {
+    ["authorization"] = true,
+    ["host"] = true,
+    ["content-type"] = true,
+    ["content-length"] = true,
+    ["transfer-encoding"] = true,
+    ["connection"] = true,
+    ["x-auth-user"] = true,
+    ["x-auth-key"] = true,
+}
+
+--- Check a custom header.
+---@return boolean ok
+---@return string | nil reason "name", "reserved" or "value"
+function GrimmorySettings.validateHeader(name, value)
+    -- RFC 9110 token characters
+    if type(name) ~= "string" or not name:match("^[%w!#$%%&'*+%-.^_`|~]+$") then
+        return false, "name"
+    end
+    if RESERVED_HEADERS[name:lower()] then
+        return false, "reserved"
+    end
+    -- No line breaks (they would start another header) or other control characters
+    if type(value) ~= "string" or value:find("[%c]") then
+        return false, "value"
+    end
+    return true
+end
+
+--- Add or change a custom header.  `old_name` is the header being edited
+--- (it is replaced, also when renamed); names are case-insensitive.
+---@return boolean ok
+---@return string | nil reason See validateHeader
+function GrimmorySettings:setExtraHeader(name, value, old_name)
+    name = trim(name or "")
+    value = trim(value or "")
+
+    local ok, reason = GrimmorySettings.validateHeader(name, value)
+    if not ok then
+        return false, reason
+    end
+
+    local headers = {}
+    for key, header_value in pairs(self:getExtraHeaders()) do
+        local lower = key:lower()
+        if lower ~= name:lower() and (old_name == nil or lower ~= old_name:lower()) then
+            headers[key] = header_value
+        end
+    end
+    headers[name] = value
+
+    self:setExtraHeaders(headers)
+    return true
+end
+
+function GrimmorySettings:removeExtraHeader(name)
+    local headers = {}
+    for key, value in pairs(self:getExtraHeaders()) do
+        if key:lower() ~= name:lower() then
+            headers[key] = value
+        end
+    end
+    self:setExtraHeaders(headers)
+end
+
 function GrimmorySettings:getUsername()
     return self.data.username or DEFAULTS.username
 end
