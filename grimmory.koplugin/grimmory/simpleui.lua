@@ -87,6 +87,7 @@ function SimpleUI.register()
         -- The browser has its own page buttons
         is_pageable = false,
         on_inject = function(widget)
+            SimpleUI.showOwnTab(widget)
             if widget.onNavbarInjected then
                 widget:onNavbarInjected()
             end
@@ -98,6 +99,22 @@ function SimpleUI.register()
     local Config = load("infra/sui_config")
     if Config and type(Config.invalidateTabsCache) == "function" then
         pcall(Config.invalidateTabsCache)
+    end
+end
+
+--- Highlight the Grimmory tab in the bar around the browser, also when it
+--- was opened another way (menu, gesture), if the bar has that tab.
+function SimpleUI.showOwnTab(widget)
+    local Bottombar = load("screens/sui_bottombar")
+    local tabs = widget._navbar_tabs
+    if not (Bottombar and type(Bottombar.showActiveTab) == "function" and type(tabs) == "table") then
+        return
+    end
+    for _, id in ipairs(tabs) do
+        if id == SimpleUI.ACTION_ID then
+            pcall(Bottombar.showActiveTab, widget, SimpleUI.ACTION_ID, tabs)
+            return
+        end
     end
 end
 

@@ -26,7 +26,10 @@ local ltn12 = require("ltn12")
 local socket = require("socket")
 local url_util = require("socket.url")
 
+local GrimmoryLogger = require("grimmory/logger")
 local Tls = require("grimmory/tls")
+
+local logger = GrimmoryLogger:new()
 
 local HttpClient = {}
 
@@ -56,15 +59,20 @@ function HttpClient.closeConnections()
 end
 
 local function connect(scheme, host, port, verify)
+    local started = socket.gettime()
     local sock = socket.tcp()
     sock:settimeout(timeout())
+    -- Includes looking up the host name (DNS)
     local ok, connect_error = sock:connect(host, port)
     if not ok then
         sock:close()
         return nil, connect_error
     end
+    local connected_at = socket.gettime()
 
     if scheme ~= "https" then
+        logger:info(string.format("Connection timing: %s connected in %.2f s (DNS and TCP)",
+            host, connected_at - started))
         return sock
     end
 
@@ -107,6 +115,8 @@ local function connect(scheme, host, port, verify)
         end
     end
 
+    logger:info(string.format("Connection timing: %s connected in %.2f s (DNS and TCP), TLS in %.2f s",
+        host, connected_at - started, socket.gettime() - connected_at))
     return tls_sock
 end
 

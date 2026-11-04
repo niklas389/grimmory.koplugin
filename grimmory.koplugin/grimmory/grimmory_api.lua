@@ -353,7 +353,9 @@ function GrimmoryAPI:getToken(base_uri, username, password)
         password = password,
     }
 
+    local started = socket.gettime()
     local ok, _, body = self:rawRequest("POST", uri, credentials)
+    logger:info(string.format("Connection timing: Grimmory login in %.2f s", socket.gettime() - started))
 
     if not ok or type(body) ~= "table" then
         if type(body) == "string" then

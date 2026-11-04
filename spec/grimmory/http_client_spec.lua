@@ -92,6 +92,10 @@ local function load_client()
         },
     }
     package.loaded["grimmory/tls"] = { describeError = function() return nil end }
+    local quiet = function() end
+    package.loaded["grimmory/logger"] = {
+        new = function() return { err = quiet, warn = quiet, info = quiet, dbg = quiet } end,
+    }
     package.loaded["grimmory/http_client"] = nil
     return require("grimmory/http_client")
 end
@@ -105,7 +109,9 @@ describe("HTTP client", function()
     end)
 
     teardown(function()
-        local fakes = { "socket", "socket.http", "socket.url", "ltn12", "grimmory/tls", "grimmory/http_client" }
+        local fakes = {
+            "socket", "socket.http", "socket.url", "ltn12", "grimmory/tls", "grimmory/logger", "grimmory/http_client",
+        }
         for _, name in ipairs(fakes) do
             package.loaded[name] = nil
         end
