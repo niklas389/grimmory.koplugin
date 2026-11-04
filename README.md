@@ -68,6 +68,22 @@ Grimmory version with the app API (`/api/v1/app`).
 - **Library Browser**: cover grid or list, clearing the browser's cache
 - **Network**: turning WiFi on when needed
 
+## Offline and failed syncs
+
+Reading progress, reading sessions and highlights stay on the device until
+Grimmory has accepted them.  When a sync does not get through (no network,
+server not reachable, another sync running), what it should have sent is
+sent later:
+
+- as soon as WiFi is connected again (by you, KOReader or another plugin),
+  after waking up and when KOReader starts, if WiFi is connected; WiFi is
+  never turned on just for this;
+- with the next sync that gets through (also the one when closing a book).
+
+Highlights (new, changed and deleted ones) are sent when their book is
+closed, by every sync of all books and by these retries, not only by "Sync
+with Grimmory".  A small cloud icon in the corner shows a retry running.
+
 ## HTTPS
 
 With an `https://` server address, the plugin checks the server's certificate:

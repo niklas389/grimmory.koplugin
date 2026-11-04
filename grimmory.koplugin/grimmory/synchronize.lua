@@ -166,9 +166,9 @@ end
 
 ---@param book_path string
 ---@param book_grimmory_id integer
----@return { sent: integer, deleted: integer } counts
+---@return { sent: integer, deleted: integer, failed: integer } counts
 function GrimmorySynchronize:pushBookAnnotations(book_path, book_grimmory_id)
-    local counts = { sent = 0, deleted = 0 }
+    local counts = { sent = 0, deleted = 0, failed = 0 }
     local local_annotations = self.reading_annotations:getAnnotations(book_path)
 
     local modified_grimmory_annotations = self.doc_metadata:getModifiedGrimmoryAnnotations(book_path)
@@ -223,6 +223,7 @@ function GrimmorySynchronize:pushBookAnnotations(book_path, book_grimmory_id)
                 end
             else
                 logger:err("Failed to push annotation", remote_annotation)
+                counts.failed = counts.failed + 1
             end
         end
     end
@@ -1257,7 +1258,91 @@ function GrimmorySynchronize:updateAllBookInfo(callback)
     end
 end
 
-function GrimmorySynchronize:synchronizeAll(callback)
+--- Push the highlights of one book (new, changed and deleted ones).
+---@return boolean done Nothing is left to push (also: not a Grimmory book)
+function GrimmorySynchronize:pushPendingAnnotations(book_path)
+    local _, _, grimmory_id = self.repository:upsertBook(book_path)
+    if grimmory_id == nil then
+        grimmory_id = self:associateBook(book_path)
+    end
+    if grimmory_id == nil then
+        logger:info("Not a Grimmory book, no highlights to push:", book_path)
+        return true
+    end
+
+    local counts = self:pushBookAnnotations(book_path, grimmory_id)
+    return counts.failed == 0
+end
+
+--- Push what earlier syncs could not send: per book its reading progress
+--- and sessions and / or its highlights.  Each book that is done is
+--- reported ("pending-synced"), so the main process can forget it.
+---@param pending table | nil settings:getPendingSyncBooks()
+---@param open_book_path string | nil Its highlights wait until it is closed
+---  (the reader would overwrite the IDs written for them)
+function GrimmorySynchronize:pushPendingBooks(pending, open_book_path, callback)
+    local lfs = require("libs/libkoreader-lfs")
+
+    for book_path, kinds in pairs(pending or {}) do
+        local function done(kind)
+            callback({ state = "pending-synced", book_path = book_path, kind = kind })
+        end
+
+        if lfs.attributes(book_path, "mode") ~= "file" then
+            -- Deleted meanwhile: nothing left to send
+            logger:info("Pending book is gone:", book_path)
+            if kinds.progress then
+                done("progress")
+            end
+            if kinds.annotations then
+                done("annotations")
+            end
+        else
+            if kinds.progress then
+                local failed = false
+                local ok, push_error = pcall(self.pushBookProgressAndSessions, self, book_path, function(state)
+                    local name = type(state) == "table" and state.state
+                    if name == "progress-failed" or name == "session-error" then
+                        failed = true
+                    end
+                    callback(state)
+                end)
+                if ok and not failed then
+                    done("progress")
+                else
+                    logger:err("Pending progress not sent:", book_path, push_error)
+                end
+            end
+
+            if kinds.annotations and book_path ~= open_book_path then
+                if not self.settings:getSyncAnnotations() then
+                    done("annotations")
+                else
+                    local ok, result = pcall(self.pushPendingAnnotations, self, book_path)
+                    if ok and result then
+                        done("annotations")
+                    else
+                        logger:err("Pending highlights not sent:", book_path, result)
+                    end
+                end
+            end
+        end
+    end
+end
+
+--- Retry after a failed or skipped sync: only what is pending, no downloads.
+function GrimmorySynchronize:pushPending(pending, open_book_path, callback)
+    if not self:checkForHealthyServer() then
+        error("Cannot connect to valid server")
+    end
+
+    self:pushAllPendingBookMetadata(callback)
+    self:pushPendingBooks(pending, open_book_path, callback)
+end
+
+---@param pending table | nil Books with something left over from earlier syncs (settings:getPendingSyncBooks())
+---@param open_book_path string | nil The book open in the reader (its highlights are pushed when it is closed)
+function GrimmorySynchronize:synchronizeAll(callback, pending, open_book_path)
     if not self:checkForHealthyServer() then
         return error("Cannot connect to valid server")
     end
@@ -1265,6 +1350,7 @@ function GrimmorySynchronize:synchronizeAll(callback)
     -- First, tell Grimmory about all of our reading
     logger:info("Pushing pending book metadata")
     self:pushAllPendingBookMetadata(callback)
+    self:pushPendingBooks(pending, open_book_path, callback)
 
     -- Then pull the shelves
     logger:info("Synchronizing shelves")
@@ -1301,8 +1387,17 @@ end
 ---@param book_path string
 ---@param callback function
 ---@param smart boolean | nil Also smart download the next volumes of its series
-function GrimmorySynchronize:synchronizeBookProgress(book_path, callback, smart)
+---@param pending table | nil Books with something left over from earlier syncs (settings:getPendingSyncBooks())
+function GrimmorySynchronize:synchronizeBookProgress(book_path, callback, smart, pending)
     self:pushBookProgressAndSessions(book_path, callback)
+
+    -- This book's changed highlights (it is closed now), and what earlier
+    -- syncs could not send, while connected anyway
+    local others = {}
+    for path, kinds in pairs(pending or {}) do
+        others[path] = path == book_path and { annotations = kinds.annotations } or kinds
+    end
+    self:pushPendingBooks(others, nil, callback)
 
     if smart and self.settings:getSmartDownloadMode() ~= "off" then
         -- After the push, so the server knows how far the book was read
@@ -1420,6 +1515,9 @@ function GrimmorySynchronize:synchronizeBook(book_path, refresh_book, callback)
         local push_ok, pushed = pcall(self.pushBookAnnotations, self, book_path, grimmory_id)
         if push_ok then
             result.annotations_pushed = pushed
+            if pushed.failed > 0 then
+                result.annotations_failed = true
+            end
         else
             logger:err("Failed pushing annotations:", book_path, "-", pushed)
             result.annotations_failed = true

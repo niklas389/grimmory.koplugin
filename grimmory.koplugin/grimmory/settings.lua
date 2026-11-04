@@ -53,6 +53,8 @@ local logger = GrimmoryLogger:new()
 ---@field sync_target_magic_shelves GrimmoryDownloadSource[]
 ---@field download_everything boolean | nil nil: derived from the sources (legacy)
 ---@field browser_kept_books { [string]: boolean } Grimmory IDs downloaded from the browser
+---@field pending_sync_books { [string]: { progress: boolean|nil, annotations: boolean|nil } } Not synced yet
+---@field pending_sync_push boolean A sync of all books did not get through
 ---@field sync_download_directory string
 ---@field sync_reading_sessions boolean
 ---@field sync_reading_progress boolean
@@ -94,6 +96,8 @@ local DEFAULTS = {
     sync_target_series = {},
     sync_target_magic_shelves = {},
     browser_kept_books = {},
+    pending_sync_books = {},
+    pending_sync_push = false,
     sync_download_directory = "grimmory/",
     sync_reading_sessions = true,
     sync_reading_progress = true,
@@ -481,6 +485,60 @@ function GrimmorySettings:setKeptBook(grimmory_id, kept, in_memory_only)
     if not in_memory_only then
         self:write()
     end
+end
+
+--- Books with something an earlier sync could not send (no network, server
+--- down, another sync running), by path: their reading progress (and
+--- sessions) and / or highlights.  Kept until Grimmory accepted them.
+---@return { [string]: { progress: boolean|nil, annotations: boolean|nil } }
+function GrimmorySettings:getPendingSyncBooks()
+    local pending = self.data.pending_sync_books
+    return type(pending) == "table" and pending or {}
+end
+
+---@param kind "progress" | "annotations"
+function GrimmorySettings:markPendingSync(book_path, kind)
+    if not book_path then
+        return
+    end
+    local pending = self:getPendingSyncBooks()
+    local entry = pending[book_path] or {}
+    if entry[kind] then
+        return
+    end
+    entry[kind] = true
+    pending[book_path] = entry
+    self.data.pending_sync_books = pending
+    self:write()
+end
+
+---@param kind "progress" | "annotations"
+function GrimmorySettings:clearPendingSync(book_path, kind)
+    local pending = self:getPendingSyncBooks()
+    local entry = pending[book_path]
+    if not entry or not entry[kind] then
+        return
+    end
+    entry[kind] = nil
+    if next(entry) == nil then
+        pending[book_path] = nil
+    end
+    self.data.pending_sync_books = pending
+    self:write()
+end
+
+--- A sync of all books (periodic, manual, on suspend) did not get through:
+--- the reading progress and sessions it would have sent are still pending.
+function GrimmorySettings:getPendingSyncPush()
+    return self.data.pending_sync_push == true
+end
+
+function GrimmorySettings:setPendingSyncPush(pending)
+    if self:getPendingSyncPush() == (pending == true) then
+        return
+    end
+    self.data.pending_sync_push = pending == true
+    self:write()
 end
 
 function GrimmorySettings:getSyncReadingProgress()

@@ -59,6 +59,17 @@ end
 -- can never run a sync at the same time against the same database.
 local sync_in_progress = false
 
+-- Shared by all instances, see Grimmory:init
+local shared_settings = nil
+
+-- Retrying what earlier syncs could not send: once WiFi is connected again,
+-- after waking up and when KOReader starts.  WiFi is never turned on for it.
+local RETRY_DELAY_SECONDS = 10
+-- While connected but the server is not reachable
+local RETRY_AGAIN_SECONDS = 15 * 60
+local retry_task = nil  -- scheduled retry (one for all plugin instances)
+local retry_owner = nil -- the instance that scheduled it
+
 ---@class Grimmory
 ---@field dialog_manager DialogManager
 ---@field scheduler GrimmoryScheduler
@@ -113,7 +124,11 @@ end
 
 function Grimmory:init()
     self.scheduler = GrimmoryScheduler:new()
-    self.settings = GrimmorySettings:new()
+    -- One settings object for all instances: the reader's instance may still
+    -- save something (e.g. after the sync on closing a book) when the file
+    -- manager's has already loaded the settings, and would be overwritten
+    shared_settings = shared_settings or GrimmorySettings:new()
+    self.settings = shared_settings
 
     self.repository = GrimmoryLocalRepository:new({
         settings = self.settings,
@@ -228,6 +243,9 @@ function Grimmory:init()
 
     self:onDispatcherRegisterActions()
 
+    -- Something left over from before (e.g. KOReader closed while offline)
+    self:scheduleRetry(RETRY_DELAY_SECONDS)
+
     logger:dbg("Initialized")
 end
 
@@ -252,6 +270,12 @@ function Grimmory:onCloseWidget()
     self.periodic_sync_update = nil
 
     self.scheduler:clear()
+
+    -- The next instance (file manager / reader) schedules its own
+    if retry_owner == self then
+        UIManager:unschedule(retry_task)
+        retry_task, retry_owner = nil, nil
+    end
 end
 
 function Grimmory:onSuspend()
@@ -274,6 +298,8 @@ function Grimmory:onResume()
     end
 
     self.reading_recorder:onSessionStart()
+
+    self:scheduleRetry(RETRY_DELAY_SECONDS)
 end
 
 function Grimmory:onPowerOff()
@@ -377,6 +403,12 @@ function Grimmory:onAnnotationsModified(annotation_info)
         is_modified = true
     else
         self.reading_recorder:onAnnotationAdded()
+    end
+
+    -- Every change (new, changed, deleted) is pushed by the next sync that
+    -- gets through, see Grimmory:onGrimmorySync
+    if self.settings:getSyncAnnotations() and self.ui and self.ui.document and self.ui.document.file then
+        self.settings:markPendingSync(self.ui.document.file, "annotations")
     end
 
     if is_modified and self.ui ~= nil and self.ui.document ~= nil and self.ui.document.file ~= nil then
@@ -604,6 +636,65 @@ function Grimmory:reconnect(on_ready, on_failed)
     end
 end
 
+--- Whether an earlier sync left something unsent that can be sent now: a
+--- sync of all books that failed, a book's progress, or highlights of a
+--- book that is not open (those of the open book wait until it is closed).
+function Grimmory:hasPendingSync()
+    if self.settings:getPendingSyncPush() then
+        return true
+    end
+
+    local open_book_path = self.ui and self.ui.document and self.ui.document.file or nil
+    for path, kinds in pairs(self.settings:getPendingSyncBooks()) do
+        if kinds.progress or (kinds.annotations and path ~= open_book_path) then
+            return true
+        end
+    end
+    return false
+end
+
+function Grimmory:scheduleRetry(delay)
+    if retry_task then
+        UIManager:unschedule(retry_task)
+    end
+    retry_owner = self
+    retry_task = function()
+        retry_task, retry_owner = nil, nil
+        self:retryPendingSync()
+    end
+    UIManager:scheduleIn(delay, retry_task)
+end
+
+--- Send what earlier syncs could not, if connected (WiFi is not turned on
+--- for this: it would drain the battery).
+function Grimmory:retryPendingSync()
+    if self.settings:getBaseUri() == "" or not self:isWifiConnected() then
+        return
+    end
+
+    if not self:hasPendingSync() then
+        return
+    end
+
+    if self.is_synchronizing or sync_in_progress then
+        -- That sync sends the pending things too; check again afterwards
+        self:scheduleRetry(60)
+        return
+    end
+
+    logger:info("Retrying what earlier syncs could not send")
+    self:onGrimmorySync(false, nil, nil, {
+        pending_only = true,
+        allow_enable_wifi = false,
+        indicator = true,
+    })
+end
+
+--- WiFi connected (by the user, KOReader or a plugin): send what is pending
+function Grimmory:onNetworkConnected()
+    self:scheduleRetry(RETRY_DELAY_SECONDS)
+end
+
 function Grimmory:isReadyToSync()
     if self.settings:getBaseUri() == "" then
         logger:info("BaseURI is not configured, cannot sync")
@@ -797,6 +888,29 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
     -- Tell everything to flush so we have data available for our sync
     UIManager:broadcastEvent(Event:new("FlushSettings"))
 
+    -- What earlier syncs could not send goes along with this one (a copy:
+    -- the sync runs in a subprocess, the settings change meanwhile)
+    local pending = {}
+    for path, kinds in pairs(self.settings:getPendingSyncBooks()) do
+        pending[path] = { progress = kinds.progress, annotations = kinds.annotations }
+    end
+    -- Its highlights wait until it is closed (the reader keeps its own copy)
+    local open_book_path = self.ui and self.ui.document and self.ui.document.file or nil
+    if options.progress_only and open_book_path == book_path then
+        -- Being closed
+        open_book_path = nil
+    end
+
+    --- What this sync should have sent is retried later: this book's
+    --- progress, or (a sync of all books) the pending progress of all
+    local function markPending()
+        if book_path then
+            self.settings:markPendingSync(book_path, "progress")
+        else
+            self.settings:setPendingSyncPush(true)
+        end
+    end
+
     local function notifyFailure(reason)
         if verbose then
             if reason then
@@ -815,8 +929,12 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
 
     local function background_callback(run, terminate)
         if not self:isReadyToSync() then
-            if options.notify and (self.is_synchronizing or sync_in_progress) then
-                self.dialog_manager:notify(_("Grimmory: another sync is running, skipped"), 3)
+            -- (Another sync of all books sends the same, nothing to retry)
+            if (self.is_synchronizing or sync_in_progress) and book_path then
+                markPending()
+                if options.notify then
+                    self.dialog_manager:notify(_("Grimmory: another sync is running, sent later"), 3)
+                end
             end
             return
         end
@@ -829,7 +947,10 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
         -- itself, so this pre-check must not abort the sync early.
         if not enable_wifi and not self:isWifiConnected() then
             logger:err("Cannot sync without connectivity")
-            notifyFailure(_("No network connection"))
+            markPending()
+            if not options.pending_only then
+                notifyFailure(_("No network connection"))
+            end
             return
         end
 
@@ -854,8 +975,8 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
                 queue_terminate,
                 _("Continue synchronization?")
             )
-        elseif options.notify then
-            -- Book closed: a small corner icon, not to distract
+        elseif options.notify or options.indicator then
+            -- Book closed, retry: a small corner icon, not to distract
             sync_indicator = self.dialog_manager:showSyncIndicator("upload")
         end
 
@@ -891,12 +1012,14 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
         local run_ok, ok, result = pcall(
             run,
             function(progress_callback)
-                if book_path and options.progress_only then
-                    self.synchronizer:synchronizeBookProgress(book_path, progress_callback, options.smart)
+                if options.pending_only then
+                    self.synchronizer:pushPending(pending, open_book_path, progress_callback)
+                elseif book_path and options.progress_only then
+                    self.synchronizer:synchronizeBookProgress(book_path, progress_callback, options.smart, pending)
                 elseif book_path then
                     self.synchronizer:synchronizeBook(book_path, refresh_book, progress_callback)
                 else
-                    self.synchronizer:synchronizeAll(progress_callback)
+                    self.synchronizer:synchronizeAll(progress_callback, pending, open_book_path)
                 end
             end,
             function(progress)
@@ -943,6 +1066,11 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
                 if progress.state == "smart-check" and sync_indicator then
                     -- Pushed; now fetching the next volumes
                     sync_indicator:setDirection("download")
+                end
+
+                if progress.state == "pending-synced" and progress.book_path then
+                    -- Accepted by Grimmory: forget it (the subprocess cannot save settings)
+                    self.settings:clearPendingSync(progress.book_path, progress.kind)
                 end
 
                 if progress.state == "progress-failed" then
@@ -1006,6 +1134,13 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
         end
 
         if not ok then
+            markPending()
+
+            if options.pending_only and self:isWifiConnected() then
+                -- Connected, but the server is not reachable: try again later
+                self:scheduleRetry(RETRY_AGAIN_SECONDS)
+            end
+
             if terminated_early then
                 logger:info("Sync was interrupted by user")
 
@@ -1019,6 +1154,27 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
                 notifyFailure(describeSyncError(result))
             end
 
+            return
+        end
+
+        if book_path then
+            -- This book: sent, or kept for the next sync
+            if progress_error_count > 0 or session_error_count > 0 then
+                markPending()
+            else
+                self.settings:clearPendingSync(book_path, "progress")
+            end
+            if book_result and (not book_result.linked
+                or (book_result.annotations_pushed and not book_result.annotations_failed)) then
+                -- Its highlights were pushed (or it is not a Grimmory book)
+                self.settings:clearPendingSync(book_path, "annotations")
+            end
+        else
+            -- All books' progress was sent (failed books are marked by now)
+            self.settings:setPendingSyncPush(false)
+        end
+
+        if options.pending_only then
             return
         end
 
