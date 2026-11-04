@@ -40,6 +40,7 @@ local Covers = require("grimmory/ui/library/covers")
 local InputSheet = require("grimmory/ui/input_sheet")
 local LibraryData = require("grimmory/ui/library/data")
 local Sheet = require("grimmory/ui/sheet")
+local SimpleUIIntegration = require("grimmory/simpleui")
 local Style = require("grimmory/ui/style")
 local Widgets = require("grimmory/ui/library/widgets")
 local GrimmoryLogger = require("grimmory/logger")
@@ -158,6 +159,54 @@ end
 
 function LibraryBrowser:close()
     UIManager:close(self)
+end
+
+--- SimpleUI closes the browser this way when another tab of its bottom bar
+--- is tapped.
+function LibraryBrowser:onClose()
+    self:close()
+    return true
+end
+
+--- SimpleUI put its bars around the browser (grimmory/simpleui.lua): show
+--- the screen again in the area between them.
+function LibraryBrowser:onNavbarInjected()
+    local top, height = SimpleUIIntegration.contentArea()
+    if not height then
+        return
+    end
+    self.content_top = top
+    self.height = height
+    self:show()
+end
+
+--- Where the content is on the screen (below SimpleUI's top bar, if shown)
+function LibraryBrowser:contentRegion()
+    return Geom:new({ x = 0, y = self.content_top or 0, w = self.width, h = self.height })
+end
+
+--- Show `parts` as the browser's content: the whole screen, or with
+--- SimpleUI's bars, the area between them (SimpleUI keeps the bars in a
+--- container around the content, which must not be replaced).
+function LibraryBrowser:setContent(parts)
+    local frame = FrameContainer:new({
+        width = self.width,
+        height = self.height,
+        padding = 0,
+        margin = 0,
+        bordersize = 0,
+        background = Blitbuffer.COLOR_WHITE,
+        parts,
+    })
+
+    local container = self._navbar_container
+    if container and container[1] then
+        frame.overlap_offset = container[1].overlap_offset or { 0, self.content_top or 0 }
+        container[1] = frame
+        self._navbar_inner = frame
+    else
+        self[1] = frame
+    end
 end
 
 --- While requests run (they block the UI) a cloud shows in the top
@@ -603,6 +652,11 @@ function LibraryBrowser:topBar(screen)
         opts.label = count == 0 and _("Select books") or T(N_("%1 book selected", "%1 books selected", count), count)
         opts.on_more = function() self:showSelectionMenu(screen) end
     elseif #self.stack == 1 then
+        if self._navbar_container then
+            -- SimpleUI's bottom bar leaves the library (as in SimpleUI's own
+            -- library, no "‹" on the top level)
+            opts.on_back = nil
+        end
         opts.tabs = TABS
         opts.selected = screen.tab
         opts.on_select = function(tab_id)
@@ -715,20 +769,12 @@ function LibraryBrowser:show()
     -- Children were added after measuring: drop the cached layout
     parts:resetLayout()
 
-    self[1] = FrameContainer:new({
-        width = self.width,
-        height = self.height,
-        padding = 0,
-        margin = 0,
-        bordersize = 0,
-        background = Blitbuffer.COLOR_WHITE,
-        parts,
-    })
+    self:setContent(parts)
 
     self:hideLoadingIndicator()
 
     UIManager:setDirty(self, function()
-        return "ui", self.dimen, true
+        return "ui", self:contentRegion(), true
     end)
 
     self:loadCovers()
@@ -749,16 +795,8 @@ function LibraryBrowser:showMessage(screen, content_h, text, retry)
     table.insert(parts, message)
     self:hideLoadingIndicator()
 
-    self[1] = FrameContainer:new({
-        width = self.width,
-        height = self.height,
-        padding = 0,
-        margin = 0,
-        bordersize = 0,
-        background = Blitbuffer.COLOR_WHITE,
-        parts,
-    })
-    UIManager:setDirty(self, function() return "ui", self.dimen end)
+    self:setContent(parts)
+    UIManager:setDirty(self, function() return "ui", self:contentRegion() end)
 end
 
 function LibraryBrowser:pagedContent(screen, content_h)
@@ -1107,7 +1145,7 @@ function LibraryBrowser:loadCovers()
                     slot:update()
                     local region = slot.painted_at
                     UIManager:setDirty(self, function()
-                        return "ui", region or self.dimen, true
+                        return "ui", region or self:contentRegion(), true
                     end)
                 end
             end

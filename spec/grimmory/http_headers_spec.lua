@@ -42,7 +42,7 @@ local function load_modules()
             }
         end,
     }
-    package.loaded["socket.http"] = {
+    package.loaded["grimmory/http_client"] = {
         request = function(request)
             last_request = request
             return 1, 200, {}
@@ -54,7 +54,6 @@ local function load_modules()
     }
     package.loaded["grimmory/settings"] = nil
     package.loaded["grimmory/grimmory_api"] = nil
-    package.loaded["grimmory/tls"] = nil
 
     return require("grimmory/settings"), require("grimmory/grimmory_api")
 end
@@ -75,7 +74,7 @@ describe("Custom HTTP headers", function()
             package.loaded[name] = nil
         end
         local others = {
-            "luasettings", "socket.http", "ltn12", "grimmory/settings", "grimmory/grimmory_api", "grimmory/tls",
+            "luasettings", "grimmory/http_client", "ltn12", "grimmory/settings", "grimmory/grimmory_api",
         }
         for _, name in ipairs(others) do
             package.loaded[name] = nil

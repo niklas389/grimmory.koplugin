@@ -44,16 +44,24 @@ The Grimmory plugin is under "Tools" (🛠️) for configuration.
 - **Smart download**: tick it inside a series to keep its next volumes on
   the device (see below).
 
+**With SimpleUI**, the library can be a tab of SimpleUI's bottom navigation
+bar: in SimpleUI's settings for the bottom bar's tabs, choose "Grimmory" (it
+is also available as a Quick Action).  The library then opens between
+SimpleUI's top and bottom bars, with the Grimmory tab active; the other tabs
+leave it.
+
 The browser and the plugin's dialogs follow the look of
 [SimpleUI](https://github.com/doctorhetfield-cmd/simpleui.koplugin) 3.  With
 SimpleUI installed, the dialogs are SimpleUI's own action sheets and the
 back, search, menu and page buttons use SimpleUI's icons (also the ones
 chosen in its settings); without it, KOReader's dialogs and icons.
 
-Each page is loaded with exactly the books it shows, and loaded pages are
-kept for 10 minutes ("⋯" -> Refresh reloads).  A book downloaded here
-opens where it was left on the server, also when it was read in Grimmory's
-own reader.  The browser needs a
+Each page is loaded with exactly the books it shows; covers load three at a
+time, and connections to the server are kept open between requests (no new
+connection and TLS handshake for every cover), which matters most over the
+Internet.  Loaded pages are kept for 10 minutes ("⋯" -> Refresh reloads).
+A book downloaded here opens where it was left on the server, also when it
+was read in Grimmory's own reader.  The browser needs a
 Grimmory version with the app API (`/api/v1/app`).
 
 ## Menu
@@ -159,7 +167,7 @@ to the latest release.
 
 Distributed under the terms of the [AGPL-3.0 License](./LICENSE).
 
-The cloud icons (`icons/cloud_*.svg`) are
+The cloud and library icons (`icons/cloud_*.svg`, `icons/local_library.svg`) are
 [Material Symbols](https://github.com/google/material-design-icons) by Google,
 under the [Apache License 2.0](./grimmory.koplugin/icons/LICENSE-material-symbols.txt).
 

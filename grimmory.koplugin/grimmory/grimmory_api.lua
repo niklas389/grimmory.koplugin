@@ -7,7 +7,7 @@ local socket_url = require("socket.url")
 local PluginMetadata = require("grimmory/plugin_metadata")
 local GrimmoryDateTime = require("grimmory/datetime")
 local GrimmoryLogger = require("grimmory/logger")
-local Tls = require("grimmory/tls")
+local HttpClient = require("grimmory/http_client")
 
 local logger = GrimmoryLogger:new()
 
@@ -396,28 +396,26 @@ function GrimmoryAPI:rawRequest(method, uri, data, request_headers, sink)
         return false, 0, "unknown url scheme"
     end
 
-    local source = nil
+    local body = nil
 
     if data then
-        local body = json.encode(data)
-
+        body = json.encode(data)
         headers["Content-Type"] = "application/json"
-        headers["Content-Length"] = string.len(body)
-
-        source = ltn12.source.string(body)
     end
 
     local response_table = {}
     if sink == nil then
         sink = ltn12.sink.table(response_table)
     end
-    local _, code, _ = Tls.request({
+    -- Keeps the connection open for the next request (see http_client.lua)
+    local _, code, _ = HttpClient.request({
         url = uri,
         method = method,
         headers = headers,
-        source = source,
+        body = body,
         sink = sink,
-    }, self.settings:getVerifyCertificates())
+        verify = self.settings:getVerifyCertificates(),
+    })
 
     local response_text = table.concat(response_table)
     local response = response_text

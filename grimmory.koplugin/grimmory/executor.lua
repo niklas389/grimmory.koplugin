@@ -522,6 +522,9 @@ function GrimmoryExecutor:background(callback, with_wifi)
 
             local new_subprocess_pid, parent_read_fd = ffiutil.runInSubProcess(
                 function(my_pid, child_write_fd)
+                    -- The open connections are the parent's (forked)
+                    require("grimmory/http_client").forgetConnections()
+
                     ---@type GrimmoryRunnableProgressCallback
                     local function progress_callback(state)
                         local write_ok, write_result = writeObjectToFD(child_write_fd, state)
