@@ -333,6 +333,74 @@ function DialogManager:showConnectionSettings()
     dialog:onShowKeyboard()
 end
 
+local HEADER_ERRORS = {
+    name = _("The name may only contain letters, digits and - _ . ! # $ % & ' * + ^ ` | ~ (no spaces)."),
+    reserved = _("This header is set by the plugin itself (Grimmory's login, KOReader sync or the request) " ..
+        "and cannot be replaced."),
+    value = _("The value may not contain line breaks or other control characters."),
+}
+
+--- Add (`name` nil) or edit a custom HTTP header; `on_done` after a change.
+function DialogManager:showHeaderEditor(name, value, on_done)
+    local dialog
+    local buttons = {
+        {
+            text = _("Cancel"),
+            id = "close",
+            callback = function()
+                UIManager:close(dialog)
+            end,
+        },
+    }
+
+    if name then
+        table.insert(buttons, {
+            text = _("Delete"),
+            callback = function()
+                UIManager:close(dialog)
+                self.settings:removeExtraHeader(name)
+                UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
+                on_done()
+            end,
+        })
+    end
+
+    table.insert(buttons, {
+        text = _("Save"),
+        callback = function()
+            local fields = dialog:getFields()
+            local ok, reason = self.settings:setExtraHeader(fields[1], fields[2], name)
+            if not ok then
+                self:toast(HEADER_ERRORS[reason] or _("Invalid header."), 4)
+                return
+            end
+            UIManager:close(dialog)
+            UIManager:broadcastEvent(Event:new("GrimmorySettingsChanged"))
+            on_done()
+        end,
+    })
+
+    dialog = MultiInputDialog:new({
+        title = name and _("Edit HTTP Header") or _("Add HTTP Header"),
+        fields = {
+            {
+                text = name or "",
+                description = _("Name"),
+                hint = "X-Api-Key",
+            },
+            {
+                text = value or "",
+                description = _("Value"),
+                text_type = "password",
+            },
+        },
+        buttons = { buttons },
+    })
+
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
+end
+
 --- Ask for a whole number (at least `minimum`) and pass it to `on_apply`.
 function DialogManager:showNumberSetting(title, description, value, minimum, on_apply)
     local dialog

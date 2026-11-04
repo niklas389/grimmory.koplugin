@@ -480,6 +480,61 @@ function GrimmoryMenu:getNetworkMenu()
     return menu
 end
 
+--- Shown value of a header: the start only, it may be a secret
+local function maskedValue(value)
+    if #value <= 4 then
+        return string.rep("•", #value)
+    end
+    return value:sub(1, 4) .. "…"
+end
+
+function GrimmoryMenu:getHeadersMenu()
+    local menu = {}
+
+    -- After a change: show the list again (the menu stays open)
+    local function refresh(touchmenu_instance)
+        if touchmenu_instance then
+            touchmenu_instance.item_table = self:getHeadersMenu()
+            touchmenu_instance:updateItems()
+        end
+    end
+
+    local names = {}
+    for name in pairs(self.settings:getExtraHeaders()) do
+        table.insert(names, name)
+    end
+    table.sort(names, function(a, b) return a:lower() < b:lower() end)
+
+    for _, name in ipairs(names) do
+        local value = self.settings:getExtraHeaders()[name]
+        table.insert(menu, {
+            text = name .. ": " .. maskedValue(value),
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self.dialog_manager:showHeaderEditor(name, value, function()
+                    refresh(touchmenu_instance)
+                end)
+            end,
+        })
+    end
+
+    if #menu > 0 then
+        menu[#menu].separator = true
+    end
+
+    table.insert(menu, {
+        text = _("Add Header"),
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            self.dialog_manager:showHeaderEditor(nil, nil, function()
+                refresh(touchmenu_instance)
+            end)
+        end,
+    })
+
+    return menu
+end
+
 function GrimmoryMenu:getTopMenu()
     local menu = {
         {
@@ -551,6 +606,14 @@ function GrimmoryMenu:getTopMenu()
             callback = function()
                 self.dialog_manager:showConnectionSettings()
             end,
+        },
+        {
+            text = _("Custom HTTP Headers"),
+            sub_item_table_func = function() return self:getHeadersMenu() end,
+            help_text = _(
+                "Headers sent with every request to the Grimmory server, e.g. for a reverse proxy " ..
+                "or an authentication proxy in front of it (Traefik, Authentik, Cloudflare Access)."
+            ),
         },
         { text = _("About Grimmory Sync"), sub_item_table = self:getAboutMenu() },
     }
