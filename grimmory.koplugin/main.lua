@@ -21,6 +21,7 @@ local GrimmoryDialogManager = require("grimmory/ui/dialog_manager")
 local GrimmoryExecutor = require("grimmory/executor")
 local GrimmoryMenu = require("grimmory/ui/menu")
 local GrimmorySettings = require("grimmory/settings")
+local GrimmorySimpleUI = require("grimmory/simpleui")
 local GrimmoryAPI = require("grimmory/grimmory_api")
 local GrimmorySynchronize = require("grimmory/synchronize")
 local GrimmoryScheduler = require("grimmory/scheduler")
@@ -245,6 +246,9 @@ function Grimmory:init()
 
     -- Something left over from before (e.g. KOReader closed while offline)
     self:scheduleRetry(RETRY_DELAY_SECONDS)
+
+    -- A "Grimmory" tab for SimpleUI's bottom bar, if SimpleUI is installed
+    GrimmorySimpleUI.register()
 
     logger:dbg("Initialized")
 end

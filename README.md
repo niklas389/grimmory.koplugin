@@ -44,6 +44,12 @@ The Grimmory plugin is under "Tools" (🛠️) for configuration.
 - **Smart download**: tick it inside a series to keep its next volumes on
   the device (see below).
 
+**With SimpleUI**, the library can be a tab of SimpleUI's bottom navigation
+bar: in SimpleUI's settings for the bottom bar's tabs, choose "Grimmory" (it
+is also available as a Quick Action).  The library then opens between
+SimpleUI's top and bottom bars, with the Grimmory tab active; the other tabs
+leave it.
+
 The browser and the plugin's dialogs follow the look of
 [SimpleUI](https://github.com/doctorhetfield-cmd/simpleui.koplugin) 3.  With
 SimpleUI installed, the dialogs are SimpleUI's own action sheets and the
@@ -161,7 +167,7 @@ to the latest release.
 
 Distributed under the terms of the [AGPL-3.0 License](./LICENSE).
 
-The cloud icons (`icons/cloud_*.svg`) are
+The cloud and library icons (`icons/cloud_*.svg`, `icons/local_library.svg`) are
 [Material Symbols](https://github.com/google/material-design-icons) by Google,
 under the [Apache License 2.0](./grimmory.koplugin/icons/LICENSE-material-symbols.txt).
 
