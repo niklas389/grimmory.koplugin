@@ -1,10 +1,9 @@
-local http = require("socket.http")
-local https = require("ssl.https")
 local json = require("json")
 local ltn12 = require("ltn12")
 
 local PluginMetadata = require("grimmory/plugin_metadata")
 local GrimmoryLogger = require("grimmory/logger")
+local Tls = require("grimmory/tls")
 
 local logger = GrimmoryLogger:new()
 
@@ -27,12 +26,7 @@ function GithubAPI:getUserAgent()
 end
 
 function GithubAPI:request(method, uri, data, sink)
-    local client
-    if uri:match("^http:") then
-        client = http
-    elseif uri:match("^https:") then
-        client = https
-    else
+    if not (uri:match("^http:") or uri:match("^https:")) then
         return false, 0, "unknown url scheme"
     end
 
@@ -56,13 +50,14 @@ function GithubAPI:request(method, uri, data, sink)
     if sink == nil then
         sink = ltn12.sink.table(response_table)
     end
-    local _, code, _ = client.request({
+    -- Always checked: a forged update would run as code on the device
+    local _, code, _ = Tls.request({
         url = uri,
         method = method,
         headers = headers,
         source = source,
         sink = sink,
-    })
+    }, true)
 
     local response_text = table.concat(response_table)
     local response = response_text

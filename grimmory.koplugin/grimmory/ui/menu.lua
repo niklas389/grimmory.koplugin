@@ -458,6 +458,17 @@ function GrimmoryMenu:getNetworkMenu()
         }),
     }
 
+    table.insert(menu, self:toggleItem(_("Check HTTPS Certificates"), "getVerifyCertificates",
+        "toggleVerifyCertificates", {
+            help_text = _(
+                "Check that the Grimmory server's HTTPS certificate is valid and belongs to the server " ..
+                "(e.g. Let's Encrypt), so nobody in between can read or change the connection.\n\n" ..
+                "Turn off only for a self-signed certificate: the connection is then still encrypted, " ..
+                "but can be intercepted. Plugin updates from GitHub are always checked."
+            ),
+        }
+    ))
+
     if Device:isPocketBook() then
         table.insert(menu, self:toggleItem(
             _("Connect WiFi in Background (experimental)"),
