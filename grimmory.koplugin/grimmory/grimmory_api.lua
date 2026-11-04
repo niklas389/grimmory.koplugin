@@ -1,6 +1,4 @@
 local _ = require("gettext")
-local http = require("socket.http")
-local https = require("ssl.https")
 local json = require("json")
 local ltn12 = require("ltn12")
 local socket = require("socket")
@@ -9,6 +7,7 @@ local socket_url = require("socket.url")
 local PluginMetadata = require("grimmory/plugin_metadata")
 local GrimmoryDateTime = require("grimmory/datetime")
 local GrimmoryLogger = require("grimmory/logger")
+local Tls = require("grimmory/tls")
 
 local logger = GrimmoryLogger:new()
 
@@ -393,12 +392,7 @@ function GrimmoryAPI:rawRequest(method, uri, data, request_headers, sink)
         headers[key] = value
     end
 
-    local client
-    if uri:match("^http:") then
-        client = http
-    elseif uri:match("^https:") then
-        client = https
-    else
+    if not (uri:match("^http:") or uri:match("^https:")) then
         return false, 0, "unknown url scheme"
     end
 
@@ -417,13 +411,13 @@ function GrimmoryAPI:rawRequest(method, uri, data, request_headers, sink)
     if sink == nil then
         sink = ltn12.sink.table(response_table)
     end
-    local _, code, _ = client.request({
+    local _, code, _ = Tls.request({
         url = uri,
         method = method,
         headers = headers,
         source = source,
         sink = sink,
-    })
+    }, self.settings:getVerifyCertificates())
 
     local response_text = table.concat(response_table)
     local response = response_text

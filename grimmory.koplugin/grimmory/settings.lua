@@ -35,6 +35,7 @@ local logger = GrimmoryLogger:new()
 ---@field sync_on_power_off boolean
 ---@field sync_enable_wifi boolean
 ---@field sync_pocketbook_background_wifi boolean
+---@field verify_certificates boolean
 ---@field sync_progress_on_open boolean
 ---@field sync_progress_on_resume boolean
 ---@field browser_layout "list" | "grid"
@@ -76,6 +77,7 @@ local DEFAULTS = {
     sync_on_power_off = false,
     sync_enable_wifi = false,
     sync_pocketbook_background_wifi = false,
+    verify_certificates = true,
     sync_progress_on_open = true,
     sync_progress_on_resume = false,
     browser_layout = "list",
@@ -643,6 +645,20 @@ end
 
 function GrimmorySettings:toggleSyncPocketBookBackgroundWifi()
     self.data.sync_pocketbook_background_wifi = not self:getSyncPocketBookBackgroundWifi()
+    self:write()
+end
+
+--- Check the HTTPS certificate of the Grimmory server (off only for
+--- self-signed certificates)
+function GrimmorySettings:getVerifyCertificates()
+    if self.data.verify_certificates == nil then
+        return DEFAULTS.verify_certificates
+    end
+    return self.data.verify_certificates
+end
+
+function GrimmorySettings:toggleVerifyCertificates()
+    self.data.verify_certificates = not self:getVerifyCertificates()
     self:write()
 end
 

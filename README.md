@@ -68,6 +68,19 @@ Grimmory version with the app API (`/api/v1/app`).
 - **Library Browser**: cover grid or list, clearing the browser's cache
 - **Network**: turning WiFi on when needed
 
+## HTTPS
+
+With an `https://` server address, the plugin checks the server's certificate:
+it must be valid (signed by a known authority, e.g. Let's Encrypt; KOReader's
+list of authorities is used) and belong to the server's host name.  Otherwise
+the connection ends before anything is sent, so nobody in between can read
+the login, the headers or the books.  If a check fails although the
+certificate is fine, check the device's date and time.
+
+For a self-signed certificate, turn off **Network** -> **Check HTTPS
+Certificates**; the connection is then still encrypted, but can be
+intercepted.  Plugin updates from GitHub are always checked.
+
 ## Custom HTTP headers
 
 **Custom HTTP Headers** (in the plugin's menu, below **Server Connection**)
