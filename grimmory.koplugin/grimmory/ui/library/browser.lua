@@ -1105,10 +1105,18 @@ end
 -- Covers
 -------------------------------------------------------------------------------
 
+-- Seconds to collect arriving covers before showing them (see loadCovers)
+local COVER_REFRESH_DELAY = 0.5
+
 function LibraryBrowser:cancelCovers()
     if self.cancel_cover_download then
         self.cancel_cover_download()
         self.cancel_cover_download = nil
+    end
+    -- The next screen is shown (refreshed) as a whole anyway
+    if self.cover_refresh then
+        UIManager:unschedule(self.cover_refresh)
+        self.cover_refresh = nil
     end
 end
 
@@ -1138,17 +1146,38 @@ function LibraryBrowser:loadCovers()
         table.insert(by_id[request.id], request.key)
     end
 
+    -- Covers arriving close together are shown with one refresh of the area
+    -- around them: many small e-ink refreshes in quick succession flicker,
+    -- and on PocketBook they can collide (parts of the screen are left as
+    -- they were).  Also, the first one comes well after the page's own.
+    local pending_regions = {}
+    local function flush()
+        self.cover_refresh = nil
+        if self.closed or #pending_regions == 0 then
+            return
+        end
+        local region = pending_regions[1]:copy()
+        for i = 2, #pending_regions do
+            region = region:combine(pending_regions[i])
+        end
+        pending_regions = {}
+        UIManager:setDirty(self, function()
+            return "ui", region, true
+        end)
+    end
+
     self.cancel_cover_download = Covers.download(self.executor, self.api, requests, function(book_id)
         for _, key in ipairs(by_id[book_id] or {}) do
             for _, slot in ipairs(slots_by_id[key] or {}) do
                 if slot:hasCover() then
                     slot:update()
-                    local region = slot.painted_at
-                    UIManager:setDirty(self, function()
-                        return "ui", region or self:contentRegion(), true
-                    end)
+                    table.insert(pending_regions, slot.painted_at or self:contentRegion())
                 end
             end
+        end
+        if not self.cover_refresh and #pending_regions > 0 then
+            self.cover_refresh = flush
+            UIManager:scheduleIn(COVER_REFRESH_DELAY, flush)
         end
     end)
 end
