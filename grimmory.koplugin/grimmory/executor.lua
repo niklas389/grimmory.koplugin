@@ -233,6 +233,31 @@ local function connection_failure()
     return false, ERROR_WIFI_FAILED
 end
 
+--- Log how long the stages of a connection take (in KOReader's log), to see
+--- where the time goes: WiFi on and associated, then an IP address and route.
+local function log_connection_stages()
+    local socket = require("socket")
+    local started = socket.gettime()
+    local associated = false
+    logger:info("WiFi timing: connecting")
+
+    local function check()
+        local elapsed = socket.gettime() - started
+        if not associated and NetworkManager:isWifiOn() then
+            associated = true
+            logger:info(string.format("WiFi timing: on and associated after %.1f s", elapsed))
+        end
+        if is_wifi_connected() then
+            logger:info(string.format("WiFi timing: connected (IP address and route) after %.1f s", elapsed))
+        elseif elapsed < WIFI_CONNECT_TIMEOUT then
+            UIManager:scheduleIn(0.25, check)
+        else
+            logger:info(string.format("WiFi timing: not connected after %.1f s", elapsed))
+        end
+    end
+    UIManager:scheduleIn(0.25, check)
+end
+
 --- Connect to WiFi, turning it on if needed.  Must run inside a coroutine.
 ---@param use_pocketbook_netagent boolean
 ---@return boolean connected
@@ -268,6 +293,8 @@ local function connect_wifi(use_pocketbook_netagent)
     if not NetworkManager:isWifiOn() then
         wifi_enabled_by_us = true
     end
+
+    log_connection_stages()
 
     local background_connect = get_background_connect(use_pocketbook_netagent)
 
