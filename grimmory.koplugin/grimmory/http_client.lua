@@ -1,5 +1,6 @@
 --[[
-HTTP/1.1 requests that keep the connection open for the next request.
+HTTP/1.1 requests that keep the connection open for the next request, with
+short timeouts, and without blocking KOReader when run cooperatively.
 
 LuaSocket's http.request opens a new connection for every request (DNS
 lookup, TCP connect and TLS handshake: 3-5 round trips before the request
@@ -7,6 +8,14 @@ is even sent).  Over the Internet, that dominates loading many small things
 like covers.  Here an idle connection to the same server is reused instead.
 
 - HTTPS is checked like grimmory/tls.lua (chain and host name).
+- Connecting (TCP and TLS) gives up after CONNECT_TIMEOUT seconds, reading
+  after `read_timeout` seconds without any data.  LuaSocket waits 60 s for
+  each, and a server behind a firewall that drops packets (e.g. a CrowdSec
+  ban) never answers.
+- After connecting to a server timed out, it counts as unreachable for
+  UNREACHABLE_SECONDS: requests to it fail at once instead of each waiting
+  again.  A successful request or HttpClient.forgetUnreachable() (WiFi
+  reconnected, the user retries) ends this.
 - A reused connection the server has closed meanwhile is noticed before any
   response arrived: the request is then sent once more on a new connection.
 - Connections idle for longer than IDLE_SECONDS are not reused (servers and
@@ -17,7 +26,12 @@ like covers.  Here an idle connection to the same server is reused instead.
   login and custom headers never go anywhere else.
 - With a proxy configured in KOReader, LuaSocket is used as before.
 
-    HttpClient.request({ url, method, headers, body, sink, verify })
+The sockets never block: waiting is done with socket.select, or, inside a
+coroutine registered with HttpClient.setContext (see grimmory/cooperative.lua),
+by sleeping in small steps through the context, so KOReader keeps running.
+Only looking up the server's name (DNS) still blocks.
+
+    HttpClient.request({ url, method, headers, body, sink, verify, read_timeout })
         -> 1, code, headers, status  or  nil, error
 --]]
 
@@ -36,46 +50,262 @@ local HttpClient = {}
 local IDLE_SECONDS = 30
 local MAX_REDIRECTS = 5
 local BLOCK = 16 * 1024
+local MAX_LINE = 64 * 1024
 
--- "scheme://host:port" -> { sock, last_used }
+-- Connecting: TCP (per address of the server) and the TLS handshake
+HttpClient.CONNECT_TIMEOUT = 10
+-- All addresses together (e.g. IPv6, then IPv4)
+local CONNECT_TOTAL_TIMEOUT = 15
+-- How long a server counts as unreachable after connecting timed out
+HttpClient.UNREACHABLE_SECONDS = 30
+-- Steps in which a cooperative request checks its socket
+local POLL_SECONDS = 0.02
+
+HttpClient.ERROR_CANCELLED = "cancelled"
+
+-- "scheme://host:port" -> { conn, last_used }
 local idle_connections = {}
+-- "scheme://host:port" -> { until_time, reason }
+local unreachable = {}
+-- coroutine -> { sleep = function(seconds): boolean, read_timeout = number|nil }
+local contexts = setmetatable({}, { __mode = "k" })
 
-local function timeout()
+local function defaultReadTimeout()
     return http.TIMEOUT or 60
 end
 
+local function currentContext()
+    local co = coroutine.running()
+    return co and contexts[co] or nil
+end
+
+--- Run the requests made by coroutine `co` cooperatively: instead of
+--- blocking, they call `context.sleep(seconds)`, which yields and returns
+--- false once the request is to be given up (cancelled).
+---@param co thread
+---@param context table | nil { sleep = function, read_timeout = number | nil }; nil to unregister
+function HttpClient.setContext(co, context)
+    contexts[co] = context
+end
+
 --- Drop the connections without closing them: in a forked subprocess they
---- still belong to the parent process.
+--- still belong to the parent process (as do the cooperative coroutines).
 function HttpClient.forgetConnections()
     idle_connections = {}
+    contexts = setmetatable({}, { __mode = "k" })
 end
 
 --- Close all idle connections (e.g. before WiFi is turned off).
 function HttpClient.closeConnections()
-    for _, connection in pairs(idle_connections) do
-        pcall(connection.sock.close, connection.sock)
+    for _, idle in pairs(idle_connections) do
+        pcall(idle.conn.sock.close, idle.conn.sock)
     end
     idle_connections = {}
 end
 
-local function connect(scheme, host, port, verify)
-    local started = socket.gettime()
-    local sock = socket.tcp()
-    sock:settimeout(timeout())
-    -- Includes looking up the host name (DNS)
-    local ok, connect_error = sock:connect(host, port)
-    if not ok then
-        sock:close()
-        return nil, connect_error
-    end
-    local connected_at = socket.gettime()
+--- Try unreachable servers again (WiFi reconnected, the user retries).
+function HttpClient.forgetUnreachable()
+    unreachable = {}
+end
 
-    if scheme ~= "https" then
-        logger:info(string.format("Connection timing: %s connected in %.2f s (DNS and TCP)",
-            host, connected_at - started))
+--- Whether an error means connecting timed out (the server did not answer).
+function HttpClient.isTimeout(message)
+    local text = tostring(message or ""):lower()
+    return text:find("timeout", 1, true) ~= nil or text:find("timed out", 1, true) ~= nil
+end
+
+-------------------------------------------------------------------------------
+-- Waiting without blocking
+-------------------------------------------------------------------------------
+
+--- Wait until `sock` is readable ("r") or writable ("w"), at most until
+--- `deadline`.
+---@return boolean | nil ready
+---@return string | nil error "timeout" or ERROR_CANCELLED
+local function waitFor(sock, mode, deadline)
+    local readers = mode == "r" and { sock } or nil
+    local writers = mode == "w" and { sock } or nil
+    local context = currentContext()
+
+    while true do
+        local remaining = deadline - socket.gettime()
+        if context then
+            local readable, writable = socket.select(readers, writers, 0)
+            if (readable and #readable > 0) or (writable and #writable > 0) then
+                return true
+            end
+            if remaining <= 0 then
+                return nil, "timeout"
+            end
+            if not context.sleep(math.min(POLL_SECONDS, remaining)) then
+                return nil, HttpClient.ERROR_CANCELLED
+            end
+        else
+            if remaining <= 0 then
+                return nil, "timeout"
+            end
+            local readable, writable = socket.select(readers, writers, remaining)
+            if (readable and #readable > 0) or (writable and #writable > 0) then
+                return true
+            end
+        end
+    end
+end
+
+--- What a non-blocking socket operation wants before it can go on.
+local function wantsWait(err)
+    if err == "timeout" or err == "wantread" then
+        return "r"
+    elseif err == "wantwrite" then
+        return "w"
+    end
+    return nil
+end
+
+--- A connection: the socket and what was received but not read yet.
+local function newConnection(sock)
+    return { sock = sock, buffer = "", eof = false }
+end
+
+--- Receive more data into conn.buffer.
+---@return boolean | nil ok
+---@return string | nil error
+local function fill(conn, timeout)
+    if conn.eof then
+        return nil, "closed"
+    end
+    local deadline = socket.gettime() + timeout
+    while true do
+        local data, err, partial = conn.sock:receive(BLOCK)
+        data = data or partial
+        if data and #data > 0 then
+            conn.buffer = conn.buffer .. data
+            if err == "closed" then
+                conn.eof = true
+            end
+            return true
+        end
+        local mode = wantsWait(err)
+        if not mode then
+            return nil, err or "closed"
+        end
+        -- "timeout" from a socket that never blocks: nothing there yet
+        local ready, wait_error = waitFor(conn.sock, err == "wantwrite" and "w" or "r", deadline)
+        if not ready then
+            return nil, wait_error
+        end
+    end
+end
+
+local function receiveLine(conn, timeout)
+    while true do
+        local line_end = conn.buffer:find("\n", 1, true)
+        if line_end then
+            local line = conn.buffer:sub(1, line_end - 1):gsub("\r$", "")
+            conn.buffer = conn.buffer:sub(line_end + 1)
+            return line
+        end
+        if #conn.buffer > MAX_LINE then
+            return nil, "line too long"
+        end
+        local ok, err = fill(conn, timeout)
+        if not ok then
+            return nil, err
+        end
+    end
+end
+
+local function sendAll(conn, data, timeout)
+    local deadline = socket.gettime() + timeout
+    local index = 1
+    while index <= #data do
+        local last, err, partial_last = conn.sock:send(data, index)
+        if last then
+            index = last + 1
+        else
+            if partial_last and partial_last >= index then
+                index = partial_last + 1
+            end
+            local mode = wantsWait(err)
+            if not mode then
+                return nil, err
+            end
+            local ready, wait_error = waitFor(conn.sock, err == "wantread" and "r" or "w", deadline)
+            if not ready then
+                return nil, wait_error
+            end
+        end
+    end
+    return true
+end
+
+-------------------------------------------------------------------------------
+-- Connecting
+-------------------------------------------------------------------------------
+
+--- The server's addresses: { { family, addr } }, or the host itself when it
+--- cannot be looked up here (LuaSocket then looks it up when connecting).
+local function addresses(host)
+    if socket.dns and socket.dns.getaddrinfo and socket.tcp4 then
+        local found, lookup_error = socket.dns.getaddrinfo(host)
+        if not found then
+            return nil, lookup_error
+        end
+        local list = {}
+        for _, address in ipairs(found) do
+            if address.family == "inet" or address.family == "inet6" then
+                table.insert(list, address)
+            end
+        end
+        if #list > 0 then
+            return list
+        end
+    end
+    return { { family = nil, addr = host } }
+end
+
+local function newSocket(family)
+    if family == "inet6" and socket.tcp6 then
+        return socket.tcp6()
+    elseif family == "inet" and socket.tcp4 then
+        return socket.tcp4()
+    end
+    return socket.tcp()
+end
+
+--- TCP connection to one address, without blocking.
+local function connectAddress(address, port, deadline)
+    local sock, create_error = newSocket(address.family)
+    if not sock then
+        return nil, create_error
+    end
+    sock:settimeout(0)
+
+    local ok, err = sock:connect(address.addr, port)
+    if ok then
         return sock
     end
+    if err ~= "timeout" then
+        sock:close()
+        return nil, err
+    end
 
+    -- In progress: connected once writable
+    local ready, wait_error = waitFor(sock, "w", deadline)
+    if not ready then
+        sock:close()
+        return nil, wait_error == "timeout" and "connection timed out" or wait_error
+    end
+    if sock:getpeername() then
+        return sock
+    end
+    -- Failed: connecting again tells why (e.g. "connection refused")
+    local _, reason = sock:connect(address.addr, port)
+    sock:close()
+    return nil, reason or "connection failed"
+end
+
+local function tlsHandshake(sock, host, verify)
     local ssl = require("ssl")
     local params = {
         mode = "client",
@@ -99,12 +329,24 @@ local function connect(scheme, host, port, verify)
         return nil, wrap_error
     end
     tls_sock:sni(host)
-    tls_sock:settimeout(timeout())
+    tls_sock:settimeout(0)
 
-    local handshake_ok, handshake_error = tls_sock:dohandshake()
-    if not handshake_ok then
-        tls_sock:close()
-        return nil, handshake_error
+    local deadline = socket.gettime() + HttpClient.CONNECT_TIMEOUT
+    while true do
+        local ok, err = tls_sock:dohandshake()
+        if ok then
+            break
+        end
+        local mode = wantsWait(err)
+        if not mode then
+            tls_sock:close()
+            return nil, err
+        end
+        local ready, wait_error = waitFor(tls_sock, err == "wantwrite" and "w" or "r", deadline)
+        if not ready then
+            tls_sock:close()
+            return nil, wait_error == "timeout" and "TLS handshake timed out" or wait_error
+        end
     end
 
     if verify then
@@ -114,37 +356,89 @@ local function connect(scheme, host, port, verify)
             return nil, "certificate does not match host " .. tostring(host)
         end
     end
-
-    logger:info(string.format("Connection timing: %s connected in %.2f s (DNS and TCP), TLS in %.2f s",
-        host, connected_at - started, socket.gettime() - connected_at))
     return tls_sock
 end
 
+local function connect(scheme, host, port, verify)
+    local started = socket.gettime()
+    local list, lookup_error = addresses(host)
+    if not list then
+        return nil, lookup_error
+    end
+    local looked_up = socket.gettime()
+
+    local total_deadline = looked_up + CONNECT_TOTAL_TIMEOUT
+    local sock, connect_error
+    for _, address in ipairs(list) do
+        local deadline = math.min(socket.gettime() + HttpClient.CONNECT_TIMEOUT, total_deadline)
+        sock, connect_error = connectAddress(address, port, deadline)
+        if sock or connect_error == HttpClient.ERROR_CANCELLED or socket.gettime() >= total_deadline then
+            break
+        end
+    end
+    if not sock then
+        return nil, connect_error
+    end
+    local connected_at = socket.gettime()
+
+    if scheme == "https" then
+        local tls_error
+        sock, tls_error = tlsHandshake(sock, host, verify)
+        if not sock then
+            return nil, tls_error
+        end
+    end
+
+    logger:info(string.format(
+        "Connection timing: %s looked up in %.2f s, connected in %.2f s%s",
+        host, looked_up - started, connected_at - looked_up,
+        scheme == "https" and string.format(", TLS in %.2f s", socket.gettime() - connected_at) or ""))
+    return newConnection(sock)
+end
+
 --- A connection to the server: an idle one if there is one, else a new one.
----@return table | nil sock
+---@return table | nil conn
 ---@return boolean | string reused, or the error
 local function getConnection(key, scheme, host, port, verify)
     local idle = idle_connections[key]
     idle_connections[key] = nil
     if idle then
         if socket.gettime() - idle.last_used <= IDLE_SECONDS then
-            return idle.sock, true
+            return idle.conn, true
         end
-        pcall(idle.sock.close, idle.sock)
+        pcall(idle.conn.sock.close, idle.conn.sock)
     end
 
-    local sock, connect_error = connect(scheme, host, port, verify)
-    if not sock then
+    local blocked = unreachable[key]
+    if blocked then
+        if socket.gettime() < blocked.until_time then
+            return nil, blocked.reason
+        end
+        unreachable[key] = nil
+    end
+
+    local conn, connect_error = connect(scheme, host, port, verify)
+    if not conn then
+        if HttpClient.isTimeout(connect_error) then
+            unreachable[key] = {
+                until_time = socket.gettime() + HttpClient.UNREACHABLE_SECONDS,
+                reason = connect_error .. " (server not reachable)",
+            }
+        end
         return nil, connect_error
     end
-    return sock, false
+    return conn, false
 end
 
-local function readHeaders(sock)
+-------------------------------------------------------------------------------
+-- Requests
+-------------------------------------------------------------------------------
+
+local function readHeaders(conn, timeout)
     local headers = {}
     local name
     while true do
-        local line, receive_error = sock:receive("*l")
+        local line, receive_error = receiveLine(conn, timeout)
         if not line then
             return nil, receive_error
         end
@@ -167,34 +461,35 @@ end
 
 --- Pass `length` bytes (or, with nil, everything until the server closes)
 --- to the sink.
-local function readBody(sock, length, sink)
+local function readBody(conn, length, sink, timeout)
     local remaining = length
     while remaining == nil or remaining > 0 do
-        local size = remaining and math.min(BLOCK, remaining) or BLOCK
-        local chunk, receive_error, partial = sock:receive(size)
-        chunk = chunk or partial
-        if chunk and #chunk > 0 then
-            local sink_ok, sink_error = sink(chunk)
-            if not sink_ok then
-                return nil, sink_error
-            end
-            if remaining then
-                remaining = remaining - #chunk
+        if #conn.buffer == 0 then
+            local ok, receive_error = fill(conn, timeout)
+            if not ok then
+                if remaining == nil and receive_error == "closed" then
+                    break
+                end
+                return nil, receive_error
             end
         end
-        if receive_error then
-            if remaining == nil and receive_error == "closed" then
-                break
-            end
-            return nil, receive_error
+        local take = remaining and math.min(remaining, #conn.buffer) or #conn.buffer
+        local chunk = conn.buffer:sub(1, take)
+        conn.buffer = conn.buffer:sub(take + 1)
+        local sink_ok, sink_error = sink(chunk)
+        if not sink_ok then
+            return nil, sink_error
+        end
+        if remaining then
+            remaining = remaining - take
         end
     end
     return 1
 end
 
-local function readChunkedBody(sock, sink)
+local function readChunkedBody(conn, sink, timeout)
     while true do
-        local line, receive_error = sock:receive("*l")
+        local line, receive_error = receiveLine(conn, timeout)
         if not line then
             return nil, receive_error
         end
@@ -204,17 +499,17 @@ local function readChunkedBody(sock, sink)
         end
         if size == 0 then
             -- Trailers, until an empty line
-            local _, trailer_error = readHeaders(sock)
+            local _, trailer_error = readHeaders(conn, timeout)
             if trailer_error then
                 return nil, trailer_error
             end
             return 1
         end
-        local body_ok, body_error = readBody(sock, size, sink)
+        local body_ok, body_error = readBody(conn, size, sink, timeout)
         if not body_ok then
             return nil, body_error
         end
-        local _, crlf_error = sock:receive("*l")
+        local _, crlf_error = receiveLine(conn, timeout)
         if crlf_error then
             return nil, crlf_error
         end
@@ -231,7 +526,7 @@ end
 ---@return table | nil response { code, status, headers, reusable }
 ---@return string | nil error
 ---@return boolean | nil before_response The error happened before any response byte (safe to repeat)
-local function exchange(sock, method, target, headers, body, sink)
+local function exchange(conn, method, target, headers, body, sink, timeout)
     local lines = { string.format("%s %s HTTP/1.1", method, target) }
     for name, value in pairs(headers) do
         table.insert(lines, name .. ": " .. tostring(value))
@@ -240,7 +535,7 @@ local function exchange(sock, method, target, headers, body, sink)
     table.insert(lines, "")
     local request = table.concat(lines, "\r\n") .. (body or "")
 
-    local sent, send_error = sock:send(request)
+    local sent, send_error = sendAll(conn, request, timeout)
     if not sent then
         return nil, send_error, true
     end
@@ -249,9 +544,9 @@ local function exchange(sock, method, target, headers, body, sink)
     local first_line = true
     repeat
         local status_error
-        status, status_error = sock:receive("*l")
+        status, status_error = receiveLine(conn, timeout)
         if not status then
-            return nil, status_error, first_line
+            return nil, status_error, first_line and #conn.buffer == 0
         end
         first_line = false
         version, code = status:match("^HTTP/(%d%.%d) (%d%d%d)")
@@ -261,7 +556,7 @@ local function exchange(sock, method, target, headers, body, sink)
         end
 
         local headers_error
-        response_headers, headers_error = readHeaders(sock)
+        response_headers, headers_error = readHeaders(conn, timeout)
         if not response_headers then
             return nil, headers_error
         end
@@ -281,19 +576,24 @@ local function exchange(sock, method, target, headers, body, sink)
         local length = tonumber(response_headers["content-length"])
         local body_ok, body_error
         if transfer_encoding ~= "" and transfer_encoding ~= "identity" then
-            body_ok, body_error = readChunkedBody(sock, sink)
+            body_ok, body_error = readChunkedBody(conn, sink, timeout)
         elseif length then
-            body_ok, body_error = readBody(sock, length, sink)
+            body_ok, body_error = readBody(conn, length, sink, timeout)
         else
             -- Until the server closes the connection
             reusable = false
-            body_ok, body_error = readBody(sock, nil, sink)
+            body_ok, body_error = readBody(conn, nil, sink, timeout)
         end
         if not body_ok then
             return nil, body_error
         end
     end
     sink(nil)
+
+    -- Left-over bytes would be read as the next response
+    if #conn.buffer > 0 or conn.eof then
+        reusable = false
+    end
 
     return { code = code, status = status, headers = response_headers, reusable = reusable }
 end
@@ -316,7 +616,8 @@ local function parseUrl(url)
 end
 
 --- Like LuaSocket's http.request(table), keeping the connection open.
----@param reqt table url, method, headers, body (string), sink, verify (HTTPS certificate check)
+---@param reqt table url, method, headers, body (string), sink, verify (HTTPS certificate check),
+---  read_timeout (seconds without data; default: LuaSocket's, or the cooperative context's)
 function HttpClient.request(reqt)
     if http.PROXY or reqt.proxy then
         -- As before (LuaSocket), with the request body as a source
@@ -336,6 +637,8 @@ function HttpClient.request(reqt)
     if not first then
         return nil, "unsupported url: " .. tostring(url)
     end
+    local context = currentContext()
+    local timeout = reqt.read_timeout or (context and context.read_timeout) or defaultReadTimeout()
 
     for _ = 0, MAX_REDIRECTS do
         local target = parseUrl(url)
@@ -358,22 +661,38 @@ function HttpClient.request(reqt)
         local response, response_error
         -- A reused connection may have been closed by the server meanwhile
         for attempt = 1, 2 do
-            local sock, reused = getConnection(key, target.scheme, target.host, target.port, reqt.verify)
-            if not sock then
+            local conn, reused = getConnection(key, target.scheme, target.host, target.port, reqt.verify)
+            if not conn then
                 local message = reused
                 return nil, Tls.describeError(message) or message
             end
 
             local before_response
-            response, response_error, before_response = exchange(sock, method, target.target, headers, reqt.body, sink)
+            response, response_error, before_response = exchange(
+                conn, method, target.target, headers, reqt.body, sink, timeout)
 
             if response and response.reusable then
-                idle_connections[key] = { sock = sock, last_used = socket.gettime() }
+                -- Two requests at the same time (cooperative) each had a
+                -- connection: keep one
+                local previous = idle_connections[key]
+                if previous then
+                    pcall(previous.conn.sock.close, previous.conn.sock)
+                end
+                idle_connections[key] = { conn = conn, last_used = socket.gettime() }
             else
-                pcall(sock.close, sock)
+                pcall(conn.sock.close, conn.sock)
             end
 
-            if response or not (reused and before_response) or attempt == 2 then
+            if response then
+                unreachable[key] = nil
+            end
+
+            -- Closed meanwhile: try again.  Not after a timeout (the server
+            -- or the network does not answer: waiting again would not help)
+            -- or when the request was given up.
+            local retry = not response and reused and before_response and attempt == 1
+                and not HttpClient.isTimeout(response_error) and response_error ~= HttpClient.ERROR_CANCELLED
+            if not retry then
                 break
             end
         end

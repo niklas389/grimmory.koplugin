@@ -2,51 +2,104 @@ local assert = require 'luassert'
 
 package.path = "grimmory.koplugin/?.lua;" .. package.path
 
--- Fake connections: each new connection takes the next script, a list of
--- responses (raw text) or false (the server closed the connection)
+-- Fake connections that never block, like the client's: each new connection
+-- takes the next script, a list of responses (raw text) or false (the server
+-- closed the connection).  Waiting (select) moves the fake clock on.
 local scripts
 local connections
+local now = 0
+-- Options for the next connections: { hang_connect = true } (no answer to
+-- connecting), { hang_read = true } (no answer to requests)
+local next_options
 
 local function fake_socket()
-    local conn = { sent = {}, closed = false, buffer = "", responses = table.remove(scripts, 1) or {} }
+    local options = table.remove(next_options, 1) or {}
+    local conn = {
+        sent = {},
+        closed = false,
+        buffer = "",
+        responses = options.hang_connect and {} or (table.remove(scripts, 1) or {}),
+        hang_connect = options.hang_connect,
+        hang_read = options.hang_read,
+    }
     table.insert(connections, conn)
 
     function conn:settimeout() end
-    function conn:connect() return 1 end
+    function conn:connect()
+        self.connect_calls = (self.connect_calls or 0) + 1
+        if self.hang_connect then
+            return nil, "timeout"
+        end
+        self.connected = true
+        return 1
+    end
+    function conn:getpeername()
+        if self.connected then
+            return "10.0.0.1", 443
+        end
+        return nil, "Transport endpoint is not connected"
+    end
     function conn:close() self.closed = true end
 
-    function conn:send(data)
-        if self.closed then
-            return nil, "closed"
+    function conn:send(data, i)
+        i = i or 1
+        if self.closed or self.dead then
+            return nil, "closed", i - 1
         end
-        table.insert(self.sent, data)
-        local response = table.remove(self.responses, 1)
-        if response == false then
-            self.dead = true
-        elseif response then
-            self.buffer = self.buffer .. response
+        table.insert(self.sent, data:sub(i))
+        if not self.hang_read then
+            local response = table.remove(self.responses, 1)
+            if response == false then
+                self.dead = true
+            elseif response then
+                self.buffer = self.buffer .. response
+            end
         end
         return #data
     end
 
-    function conn:receive(pattern)
-        if pattern == "*l" then
-            local line, rest = self.buffer:match("^(.-)\r?\n(.*)$")
-            if not line then
-                return nil, "closed"
-            end
-            self.buffer = rest
-            return line
+    function conn:receive(size)
+        if #self.buffer >= size then
+            local chunk = self.buffer:sub(1, size)
+            self.buffer = self.buffer:sub(size + 1)
+            return chunk
         end
-        if #self.buffer == 0 then
+        local partial = self.buffer
+        self.buffer = ""
+        if self.dead and partial == "" then
             return nil, "closed", ""
         end
-        local chunk = self.buffer:sub(1, pattern)
-        self.buffer = self.buffer:sub(pattern + 1)
-        return chunk
+        return nil, "timeout", partial
+    end
+
+    function conn:readable()
+        return #self.buffer > 0 or self.dead
+    end
+
+    function conn:writable()
+        return not self.hang_connect
     end
 
     return conn
+end
+
+local function fake_select(readers, writers, timeout)
+    local readable, writable = {}, {}
+    for _, sock in ipairs(readers or {}) do
+        if sock:readable() then
+            table.insert(readable, sock)
+        end
+    end
+    for _, sock in ipairs(writers or {}) do
+        if sock:writable() then
+            table.insert(writable, sock)
+        end
+    end
+    if #readable == 0 and #writable == 0 then
+        now = now + (timeout or 0)
+        return readable, writable, "timeout"
+    end
+    return readable, writable
 end
 
 local function response(code, headers, body)
@@ -60,11 +113,20 @@ local function response(code, headers, body)
     return table.concat(lines, "\r\n") .. "\r\n\r\n" .. (body or "")
 end
 
-local now = 0
-
 local function load_client()
-    scripts, connections = {}, {}
-    package.loaded["socket"] = { tcp = fake_socket, gettime = function() return now end }
+    scripts, connections, next_options = {}, {}, {}
+    package.loaded["socket"] = {
+        tcp = fake_socket,
+        tcp4 = fake_socket,
+        tcp6 = fake_socket,
+        select = fake_select,
+        gettime = function() return now end,
+        dns = {
+            getaddrinfo = function(host)
+                return { { family = "inet", addr = host } }
+            end,
+        },
+    }
     package.loaded["socket.http"] = { TIMEOUT = 5 }
     package.loaded["socket.url"] = {
         parse = function(url)
@@ -79,6 +141,9 @@ local function load_client()
         end,
     }
     package.loaded["ltn12"] = {
+        source = {
+            string = function(text) return function() local chunk = text; text = nil; return chunk end end,
+        },
         sink = {
             table = function(t)
                 return function(chunk)
@@ -91,7 +156,7 @@ local function load_client()
             null = function() return function() return 1 end end,
         },
     }
-    package.loaded["grimmory/tls"] = { describeError = function() return nil end }
+    package.loaded["grimmory/tls"] = { describeError = function() return nil end, findCaFile = function() end }
     local quiet = function() end
     package.loaded["grimmory/logger"] = {
         new = function() return { err = quiet, warn = quiet, info = quiet, dbg = quiet } end,
@@ -195,6 +260,97 @@ describe("HTTP client", function()
         scripts = { { "HTTP/1.1 100 Continue\r\n\r\n" .. response(201, {}, "created") } }
 
         assert.are.same({ 1, 201, "created" }, { get("http://grimmory.local/a", "POST") })
+    end)
+
+    it("gives up connecting after the connect timeout", function()
+        next_options = { { hang_connect = true } }
+
+        local started = now
+        local ok, message = get("http://grimmory.local/a")
+
+        assert.is_nil(ok)
+        assert.truthy(message:find("timed out", 1, true))
+        assert.are.equal(HttpClient.CONNECT_TIMEOUT, now - started)
+        assert.is_true(connections[1].closed)
+    end)
+
+    it("fails at once while a server that did not answer counts as unreachable", function()
+        next_options = { { hang_connect = true } }
+        scripts = { { response(200, {}, "two") } }
+
+        get("http://grimmory.local/a")
+        local started = now
+        local ok, message = get("http://grimmory.local/b")
+
+        assert.is_nil(ok)
+        assert.truthy(message:find("not reachable", 1, true))
+        assert.are.equal(started, now)
+        assert.are.equal(1, #connections)
+
+        -- Later, or once forgotten, it is tried again
+        HttpClient.forgetUnreachable()
+        assert.are.same({ 1, 200, "two" }, { get("http://grimmory.local/b") })
+    end)
+
+    it("tries an unreachable server again after a while", function()
+        next_options = { { hang_connect = true } }
+        scripts = { { response(200, {}, "two") } }
+
+        get("http://grimmory.local/a")
+        now = now + HttpClient.UNREACHABLE_SECONDS + 1
+
+        assert.are.same({ 1, 200, "two" }, { get("http://grimmory.local/b") })
+    end)
+
+    it("gives up reading after the read timeout, without sending again", function()
+        scripts = { { response(200, {}, "one") } }
+
+        get("http://grimmory.local/a")
+        -- From now on the server does not answer
+        connections[1].hang_read = true
+
+        local started = now
+        local body = {}
+        local ok, message = HttpClient.request({
+            url = "http://grimmory.local/b",
+            sink = package.loaded["ltn12"].sink.table(body),
+            read_timeout = 7,
+        })
+
+        assert.is_nil(ok)
+        assert.truthy(message:find("timeout", 1, true))
+        assert.are.equal(7, now - started)
+        -- Not sent again on a new connection: that would only wait as long again
+        assert.are.equal(1, #connections)
+    end)
+
+    it("waits cooperatively inside a registered coroutine, and can be given up", function()
+        next_options = { { hang_connect = true } }
+        local sleeps = 0
+        local result
+        local co = coroutine.create(function()
+            result = { get("http://grimmory.local/a") }
+        end)
+        HttpClient.setContext(co, {
+            sleep = function(seconds)
+                sleeps = sleeps + 1
+                now = now + seconds
+                coroutine.yield()
+                -- Given up after three steps
+                return sleeps < 3
+            end,
+        })
+
+        for _ = 1, 3 do
+            assert.is_true(coroutine.resume(co))
+            assert.are.equal("suspended", coroutine.status(co))
+        end
+        assert.is_true(coroutine.resume(co))
+
+        assert.are.equal("dead", coroutine.status(co))
+        assert.are.equal(3, sleeps)
+        assert.are.same({ nil, "cancelled" }, { result[1], result[2] })
+        assert.is_true(connections[1].closed)
     end)
 
     it("starts without connections in a subprocess", function()

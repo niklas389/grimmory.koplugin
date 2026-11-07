@@ -44,6 +44,7 @@ local SimpleUIIntegration = require("grimmory/simpleui")
 local Style = require("grimmory/ui/style")
 local Widgets = require("grimmory/ui/library/widgets")
 local GrimmoryLogger = require("grimmory/logger")
+local HttpClient = require("grimmory/http_client")
 
 local logger = GrimmoryLogger:new()
 local Screen = Device.screen
@@ -85,6 +86,9 @@ function LibraryBrowser:init()
         is_connected = self.is_connected,
         before_request = function()
             self:showLoadingIndicator()
+        end,
+        after_requests = function()
+            self:loadingFinished()
         end,
     })
 
@@ -150,6 +154,7 @@ end
 function LibraryBrowser:onCloseWidget()
     self.closed = true
     self:cancelCovers()
+    self.data:cancelAll()
 
     if self.release_wifi then
         self.release_wifi()
@@ -189,6 +194,7 @@ end
 --- SimpleUI's bars, the area between them (SimpleUI keeps the bars in a
 --- container around the content, which must not be replaced).
 function LibraryBrowser:setContent(parts)
+    self.content_shown = true
     local frame = FrameContainer:new({
         width = self.width,
         height = self.height,
@@ -209,9 +215,9 @@ function LibraryBrowser:setContent(parts)
     end
 end
 
---- While requests run (they block the UI) a cloud shows in the top
---- bar, left of "⋯".  Only its area is refreshed, which is cheaper on e-ink
---- than a notice opening and closing; the next screen replaces it.
+--- While requests run a cloud shows in the top bar, left of "⋯".  Only its
+--- area is refreshed, which is cheaper on e-ink than a notice opening and
+--- closing; the next screen replaces it.
 function LibraryBrowser:showLoadingIndicator()
     local slot = self.loading_area
     if self.loading_shown or not slot then
@@ -233,20 +239,64 @@ function LibraryBrowser:showLoadingIndicator()
     Screen.bb:paintRect(area.x, area.y, area.w, area.h, Blitbuffer.COLOR_WHITE)
     icon:paintTo(Screen.bb, area.x, area.y)
     icon:free()
+    self.loading_indicator_area = area
 
     UIManager:setDirty(nil, "fast", area)
     UIManager:forceRePaint()
+end
 
-    -- Usually the screen shown next paints over it; a request that does not
-    -- change the screen (e.g. from a sheet) leaves it: repaint its area then
+--- No request runs any more.  Usually the screen shown next paints over the
+--- cloud; a request that does not change the screen (e.g. from a sheet)
+--- leaves it: repaint its area then.
+function LibraryBrowser:loadingFinished()
     UIManager:nextTick(function()
-        if self.loading_shown and not self.closed then
+        local area = self.loading_indicator_area
+        if self.loading_shown and area and not self.closed and not self.data:isBusy() then
             self.loading_shown = false
             UIManager:setDirty(self, function()
                 return "fast", area
             end)
         end
     end)
+end
+
+-- A screen still loading keeps showing the previous one this long, then
+-- "Loading…" (most answers arrive sooner: one refresh instead of two)
+local LOADING_MESSAGE_DELAY = 1
+
+--- The screen's content is loading: keep what is shown for a moment (the
+--- cloud shows that something happens), then say so.  Nothing shown yet:
+--- say so at once.  Taps keep working meanwhile (e.g. Back).
+function LibraryBrowser:showLoading(screen, content_h)
+    local token = {}
+    self.loading_token = token
+
+    local function show_message()
+        self:showMessage(screen, content_h, _("Loading…"))
+        -- The message's top bar has no cloud: paint it again once the
+        -- message is on the screen
+        UIManager:scheduleIn(0.1, function()
+            if not self.closed and self.loading_token == token and self.data:isBusy() then
+                self:showLoadingIndicator()
+            end
+        end)
+    end
+
+    if not self.content_shown then
+        show_message()
+        return
+    end
+    UIManager:scheduleIn(LOADING_MESSAGE_DELAY, function()
+        if not self.closed and self.loading_token == token and self:current() == screen then
+            show_message()
+        end
+    end)
+end
+
+--- Try again after an error: also servers that did not answer just now.
+function LibraryBrowser:retry()
+    HttpClient.forgetUnreachable()
+    self:show()
 end
 
 function LibraryBrowser:hideLoadingIndicator()
@@ -719,6 +769,8 @@ end
 --- (showing the loading indicator meanwhile) and then shows it.
 function LibraryBrowser:show()
     self:cancelCovers()
+    -- A "Loading…" still to come is for an older state
+    self.loading_token = nil
 
     local screen = self:current()
     local parts = VerticalGroup:new({ align = "left" })
@@ -737,6 +789,7 @@ function LibraryBrowser:show()
     if not self.connected then
         if self.connect_error then
             self:showMessage(screen, content_h, self.connect_error, function()
+                HttpClient.forgetUnreachable()
                 self:startConnecting()
                 self:show()
             end)
@@ -823,30 +876,41 @@ function LibraryBrowser:pagedContent(screen, content_h)
 
     if screen.loaded_page ~= screen.page then
         local requested_page = screen.page
+        if screen.loading_page == requested_page and screen.loading_size == size then
+            -- Already asked (e.g. left and opened again meanwhile)
+            self:showLoading(screen, content_h)
+            return nil
+        end
+
         local waiting = false
         local answer = nil
 
         -- A cached page answers synchronously (no loading indicator); a
         -- network answer arrives later and shows the screen again.
+        screen.loading_page, screen.loading_size = requested_page, size
         screen.load(requested_page - 1, size, function(ok, result)
+            if screen.loading_page == requested_page and screen.loading_size == size then
+                screen.loading_page, screen.loading_size = nil, nil
+            end
             if not waiting then
                 answer = { ok = ok, result = result }
                 return
             end
-            if self:current() == screen and screen.page == requested_page then
+            if not self.closed and self:current() == screen and screen.page == requested_page
+                and screen.size == size then
                 self:applyPage(screen, requested_page, ok, result, content_h)
             end
         end)
 
         if not answer then
-            -- Reconnecting first; shown again when the answer arrives
+            -- Shown again when the answer arrives
             waiting = true
-            self:showMessage(screen, content_h, _("Connecting…"))
+            self:showLoading(screen, content_h)
             return nil
         end
 
         if not answer.ok then
-            self:showMessage(screen, content_h, answer.result, function() self:show() end)
+            self:showMessage(screen, content_h, answer.result, function() self:retry() end)
             return nil
         end
 
@@ -861,7 +925,7 @@ end
 
 function LibraryBrowser:applyPage(screen, requested_page, ok, result, content_h)
     if not ok then
-        self:showMessage(screen, content_h, result, function() self:show() end)
+        self:showMessage(screen, content_h, result, function() self:retry() end)
         return
     end
 
@@ -1011,6 +1075,12 @@ function LibraryBrowser:homeContent(screen, content_h)
     local cols = math.max(3, math.floor(grid_w / cell_w))
     cell_w = math.floor(grid_w / cols)
 
+    if not screen.sections and screen.home_loading then
+        -- Still loading (e.g. left and opened again meanwhile)
+        self:showLoading(screen, content_h)
+        return nil
+    end
+
     if not screen.sections then
         local definitions = self:getHomeSections(cols)
         local sections = {}
@@ -1023,8 +1093,9 @@ function LibraryBrowser:homeContent(screen, content_h)
             local definition = definitions[index]
             if not definition or #sections >= max_sections then
                 finished = true
-                if self:current() == screen then
-                    screen.sections = sections
+                screen.home_loading = nil
+                screen.sections = sections
+                if not self.closed and self:current() == screen then
                     self:show()
                 end
                 return
@@ -1035,7 +1106,10 @@ function LibraryBrowser:homeContent(screen, content_h)
                     if index == 1 then
                         -- The first request failing means no connection / server
                         finished = true
-                        self:showMessage(screen, content_h, books, function() self:show() end)
+                        screen.home_loading = nil
+                        if not self.closed and self:current() == screen then
+                            self:showMessage(screen, content_h, books, function() self:retry() end)
+                        end
                         return
                     end
                     logger:warn("Home section failed:", definition.title, books)
@@ -1046,11 +1120,12 @@ function LibraryBrowser:homeContent(screen, content_h)
             end)
         end
 
+        screen.home_loading = true
         load_next()
 
         if not finished then
-            -- Still waiting (reconnecting); shown again when done
-            self:showMessage(screen, content_h, _("Connecting…"))
+            -- Shown again when done
+            self:showLoading(screen, content_h)
         end
         return nil
     end
@@ -1228,12 +1303,19 @@ end
 --- Whether a volume of the series is being read (as the server says; cached)
 function LibraryBrowser:isSeriesInProgress(series_name)
     local in_progress = false
+    local returned = false
 
-    -- Answered synchronously unless reconnecting; then the screen is shown
-    -- again anyway once connected, with the answer cached.
+    -- Cached after the first time; the first answer arrives later and shows
+    -- the screen again (with the answer cached)
     self.data:fetch("series-in-progress", function()
         return self.api:getAppSeriesInProgress()
     end, function(ok, names)
+        if returned then
+            if ok and not self.closed then
+                self:show()
+            end
+            return
+        end
         if ok then
             for _, name in ipairs(names) do
                 if name == series_name then
@@ -1244,6 +1326,7 @@ function LibraryBrowser:isSeriesInProgress(series_name)
         end
     end)
 
+    returned = true
     return in_progress
 end
 
