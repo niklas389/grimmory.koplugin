@@ -28,6 +28,9 @@ local GrimmoryScheduler = require("grimmory/scheduler")
 local GrimmorySelfUpdater = require("grimmory/ota/self_updater")
 local GithubAPI = require("grimmory/ota/github_api")
 local HttpClient = require("grimmory/http_client")
+local ProgressSheet = require("grimmory/ui/progress_sheet")
+local Sheet = require("grimmory/ui/sheet")
+local SyncProgress = require("grimmory/ui/sync_progress")
 local GrimmoryLogger = require("grimmory/logger")
 local GrimmoryReadingRecorder = require("grimmory/reading/recorder")
 local GrimmoryLocalRepository = require("grimmory/repository")
@@ -976,19 +979,32 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
         sync_in_progress = true
         self.menu:onGrimmorySyncStart(queue_terminate)
 
-        local update_callback, close_callback, sync_indicator
+        local progress_sheet, sync_progress, close_callback, sync_indicator
         if verbose then
-            update_callback, close_callback = self.dialog_manager:showProgressDialog(
-                _("Synchronizing to Grimmory"),
-                queue_terminate,
-                _("Continue synchronization?")
-            )
+            -- What the sync is doing, step by step ("Downloading books, 3 of 6")
+            sync_progress = SyncProgress:new()
+            progress_sheet = ProgressSheet.show({
+                title = _("Synchronizing with Grimmory"),
+                icon = "update",
+                on_stop = function()
+                    Sheet.confirm({
+                        title = _("Stop synchronizing?"),
+                        icon = "update",
+                        ok_text = _("Stop"),
+                        cancel_text = _("Continue"),
+                        ok_callback = queue_terminate,
+                    })
+                end,
+            })
+            progress_sheet:update({ step = _("Connecting to Grimmory"), detail = "", fraction = 0 })
+            close_callback = function()
+                progress_sheet:close()
+            end
         elseif options.notify or options.indicator then
             -- Book closed, retry: a small corner icon, not to distract
             sync_indicator = self.dialog_manager:showSyncIndicator("upload")
         end
 
-        local last_progress_step = 0
         local session_count = 0
         local session_error_count = 0
         local book_download_count = 0
@@ -999,18 +1015,6 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
         local progress_pushed = false
         local book_result = nil
         local info_updated_paths = {}
-
-        local update_progress_step = function(progress_step)
-            if progress_step <= last_progress_step then
-                return
-            end
-
-            last_progress_step = progress_step
-
-            if update_callback ~= nil then
-                pcall(update_callback, progress_step, 10)
-            end
-        end
 
         -- In the future, we should limit what we sync
         -- to current or recent books.  For now, we sync everything.
@@ -1035,40 +1039,11 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
                     return
                 end
 
-                if progress.state == "book-push-metadata" then
-                    local pushed_books = progress.pushed_books or 0
-                    local total_books = progress.total_books or 0
-
-                    if total_books == 0 then
-                        pushed_books = 1
-                        total_books = 1
+                if progress_sheet then
+                    local state = sync_progress:handle(progress)
+                    if state then
+                        progress_sheet:update(state)
                     end
-
-                    -- Pushing sessions is 1, 2, and 3
-                    update_progress_step(math.floor((pushed_books / total_books) * 3))
-                end
-
-                if progress.state:find("^shelf-") ~= nil then
-                    -- If we are still seeing shelves we are at step 3
-                    -- Because complete with shelves is step 4.
-                    update_progress_step(3)
-                end
-
-                if (
-                    progress.state == "book-downloaded" or
-                    progress.state == "book-error" or
-                    progress.state == "book-pull-metadata"
-                ) then
-                    local viewed_books = progress.viewed_books or 0
-                    local total_books = progress.total_books or 0
-
-                    if total_books == 0 then
-                        viewed_books = 1
-                        total_books = 1
-                    end
-
-                    -- Step 5, 6, 7, 8, 9 are all pulling books down
-                    update_progress_step(4 + math.floor((viewed_books / total_books) * 5))
                 end
 
                 if progress.state == "smart-check" and sync_indicator then

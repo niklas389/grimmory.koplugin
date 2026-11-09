@@ -1,4 +1,5 @@
 local assert = require 'luassert'
+local unpack = unpack or table.unpack -- luacheck: ignore
 local spy = require 'luassert.spy'
 
 package.path = "grimmory.koplugin/?.lua;" .. package.path
@@ -147,6 +148,61 @@ describe("Smart download", function()
             assert.are.same({}, ids(SmartDownload.selectVolumes(series("READ", "READ"), 1, 3)))
         end)
 
+        it("goes by series number, whatever order the server listed the volumes in", function()
+            local books = as_comics(series("UNREAD", "UNREAD", "UNREAD", "UNREAD", "UNREAD", "UNREAD",
+                "UNREAD", "UNREAD", "UNREAD", "UNREAD", "UNREAD", "UNREAD", "UNREAD"))
+            local shuffled = {}
+            for _, index in ipairs({ 10, 3, 11, 4, 12, 13, 1, 9, 2, 5, 8, 6, 7 }) do
+                table.insert(shuffled, books[index])
+            end
+            assert.are.same({ 1, 2, 3 }, ids(SmartDownload.selectVolumes(shuffled, 1, 3)))
+        end)
+
+        it("takes the number from the file name when the series number is missing", function()
+            local books = {}
+            for _, number in ipairs({ 12, 2, 1, 10, 3 }) do
+                table.insert(books, {
+                    id = number,
+                    title = "Manga",
+                    primary_file_name = string.format("%02d Manga (2021).cbz", number),
+                    primary_file_type = "CBZ",
+                })
+            end
+            assert.are.same({ 1, 2, 3 }, ids(SmartDownload.selectVolumes(books, 1, 3)))
+        end)
+
+        it("puts volumes without any number after the numbered ones, in the server's order", function()
+            local books = series("UNREAD", "UNREAD", "UNREAD")
+            books[1].series_number = nil
+            books[1].primary_file_name = "extra.epub"
+            assert.are.same({ 2, 3, 1 }, ids(SmartDownload.sortVolumes(books)))
+        end)
+
+        it("does not count volumes only opened for a moment as being read", function()
+            -- Volumes 1, 2 and 10 marked as reading, without progress worth the name
+            local statuses = {}
+            for index = 1, 13 do
+                statuses[index] = (index == 1 or index == 2 or index == 10) and "READING" or "UNREAD"
+            end
+            local books = as_comics(series(unpack(statuses)))
+            for _, index in ipairs({ 1, 2, 10 }) do
+                books[index].read_progress = 0
+            end
+
+            assert.are.same({ 1, 2, 3 }, ids(SmartDownload.selectVolumes(books, 1, 3)))
+            assert.is_false(SmartDownload.isInProgress(books))
+        end)
+
+        it("counts a volume being read from a little progress on, or with unknown progress", function()
+            local books = series("READ", "READING", "UNREAD")
+            books[2].read_progress = 1.5
+            assert.are.same({ 2, 3 }, ids(SmartDownload.selectVolumes(books, 1, 3)))
+
+            books[2].read_progress = nil
+            assert.are.same({ 2, 3 }, ids(SmartDownload.selectVolumes(books, 1, 3)))
+            assert.is_true(SmartDownload.isInProgress(books))
+        end)
+
         it("skips volumes without a file", function()
             local books = series("READING", "UNREAD", "UNREAD")
             books[2].primary_file_name = nil
@@ -243,6 +299,8 @@ describe("Smart download", function()
             -- Volume 2 is on the device already
             assert.spy(sync.pullBook).was.called(1)
             assert.are.same({
+                { state = "stage", stage = "smart-check", current = 1, total = 1, title = "Saga" },
+                { state = "stage", stage = "smart-download", current = 1, total = 1, title = "Volume 3" },
                 { state = "smart-download", book_id = 3, book_path = "/books/volume_3.epub", title = "Volume 3" },
             }, events)
             assert.is_true(sync.settings:isKeptBook(3))

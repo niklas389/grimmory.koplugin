@@ -14,6 +14,22 @@ local SKIPPED_STATUS = { READ = true, WONT_READ = true, ABANDONED = true }
 
 local READING_STATUS = { READING = true, RE_READING = true }
 
+-- A volume marked as being read counts only from this much progress on
+-- (percent): opening a volume for a moment marks it "reading" on the server
+-- (e.g. a peek in Grimmory's reader, or a sync of a book opened briefly)
+SmartDownload.MIN_READING_PERCENT = 1
+
+--- Whether the volume is really being read: marked so, and read a little.
+--- Unknown progress counts as being read.
+---@param book LibraryBook
+function SmartDownload.isReading(book)
+    if not READING_STATUS[book.read_status or ""] then
+        return false
+    end
+    local progress = tonumber(book.read_progress)
+    return progress == nil or progress >= SmartDownload.MIN_READING_PERCENT
+end
+
 ---@param book LibraryBook
 function SmartDownload.isComic(book)
     local file_type = book.primary_file_type and book.primary_file_type:upper() or nil
@@ -29,30 +45,88 @@ end
 ---@param books LibraryBook[]
 function SmartDownload.isInProgress(books)
     for _, book in ipairs(books) do
-        if READING_STATUS[book.read_status or ""] then
+        if SmartDownload.isReading(book) then
             return true
         end
     end
     return false
 end
 
+--- A volume's place in its series: its series number, else a number the
+--- file name starts with ("03 Title (2020).cbz"), else nil.
+---@param book LibraryBook
+---@return number | nil
+function SmartDownload.volumeNumber(book)
+    if type(book.series_number) == "number" then
+        return book.series_number
+    end
+    local name = book.primary_file_name or ""
+    local number = name:match("^%s*(%d+%.?%d*)")
+    return number and tonumber(number) or nil
+end
+
+--- The volumes in series order, whatever order the server listed them in:
+--- by number; volumes without one after them, in the server's order.
+---@param books LibraryBook[]
+---@return LibraryBook[]
+function SmartDownload.sortVolumes(books)
+    local entries = {}
+    for index, book in ipairs(books) do
+        table.insert(entries, { book = book, number = SmartDownload.volumeNumber(book), index = index })
+    end
+    table.sort(entries, function(a, b)
+        if a.number and b.number and a.number ~= b.number then
+            return a.number < b.number
+        end
+        if (a.number == nil) ~= (b.number == nil) then
+            return a.number ~= nil
+        end
+        return a.index < b.index
+    end)
+
+    local sorted = {}
+    for _, entry in ipairs(entries) do
+        table.insert(sorted, entry.book)
+    end
+    return sorted
+end
+
+--- How the volumes look to smart download, for the log: "1 READ, 2 READING, 3, ..."
+---@param books LibraryBook[]
+function SmartDownload.describe(books)
+    local parts = {}
+    for _, book in ipairs(books) do
+        local number = SmartDownload.volumeNumber(book)
+        local text = number and string.format("%g", number) or ("#" .. tostring(book.id))
+        if book.read_status and book.read_status ~= "UNREAD" then
+            text = text .. " " .. book.read_status
+            if READING_STATUS[book.read_status] and book.read_progress then
+                text = text .. string.format(" %g%%", book.read_progress)
+            end
+        end
+        table.insert(parts, text)
+    end
+    return table.concat(parts, ", ")
+end
+
 --- The volumes to have on the device: the one being read (the latest, if
---- several are) and the next unread ones after it.  Without one being read,
---- the next unread ones after the last finished volume (from the start for
---- a series not started yet).
----@param books LibraryBook[] The series' volumes, in series order
+--- several are; see isReading) and the next unread ones after it.  Without
+--- one being read, the next unread ones after the last finished volume (from
+--- the start for a series not started yet).  Volumes only opened briefly
+--- count as unread.
+---@param books LibraryBook[] The series' volumes (sorted here into series order)
 ---@param ahead_books number Unread book volumes to keep ahead
 ---@param ahead_comics number Unread comic volumes to keep ahead
 ---@return LibraryBook[]
 function SmartDownload.selectVolumes(books, ahead_books, ahead_comics)
+    books = SmartDownload.sortVolumes(books)
     local current_index = nil
     local last_finished_index = 0
 
     for index, book in ipairs(books) do
-        local status = book.read_status or ""
-        if READING_STATUS[status] then
+        if SmartDownload.isReading(book) then
             current_index = index
-        elseif status == "READ" then
+        elseif book.read_status == "READ" then
             last_finished_index = index
         end
     end

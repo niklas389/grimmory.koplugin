@@ -6,6 +6,9 @@ local GrimmoryLogger = require("grimmory/logger")
 
 local logger = GrimmoryLogger:new()
 
+-- Progress (percent points) this close counts as the same
+local SAME_PROGRESS = 0.01
+
 ---@param progress_a ReadingSessionProgress | nil
 ---@param progress_b ReadingSessionProgress | nil
 ---@return number comparison
@@ -22,7 +25,7 @@ local function compareProgress(progress_a, progress_b)
     -- the same.
     if progress_b.end_xpointer ~= nil and progress_b.end_xpointer == progress_a.end_xpointer then
         return 0
-    elseif math.abs(progress_b.end_progress - progress_a.end_progress) < 0.01 then
+    elseif math.abs(progress_b.end_progress - progress_a.end_progress) < SAME_PROGRESS then
         return 0
     end
 
@@ -54,9 +57,20 @@ function ReadingProgressManager:new(o)
     return o
 end
 
-function ReadingProgressManager:getNewerProgressForBook(book_path)
+---@param remote_percent number | nil The server's KOReader progress (0 - 100), when already known
+---  (e.g. from the book list): when it is the local one, the server is not asked
+function ReadingProgressManager:getNewerProgressForBook(book_path, remote_percent)
     -- Skip most recent session
     local local_progress = self:getLocalProgressForBook(book_path)
+
+    -- Same progress: nothing newer (as compareProgress would decide), and
+    -- one request per book less in a sync
+    if remote_percent and local_progress
+        and math.abs(remote_percent - (local_progress.end_progress or 0)) < SAME_PROGRESS then
+        logger:dbg("No new progress for book (from the book list):", book_path)
+        return nil, nil, nil
+    end
+
     local remote_name, remote_id, remote_progress = self:getRemoteProgressForBook(book_path)
 
     if compareProgress(local_progress, remote_progress) <= 0 then

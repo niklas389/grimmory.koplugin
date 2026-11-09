@@ -62,7 +62,8 @@ describe("Reading progress from the server", function()
                 koreaderProgress = { percentage = 0.5 },
                 epubProgress = { percentage = 20 },
             }, "READING")
-            assert.are.same({ percent = 50 }, progress)
+            -- Also kept apart: what KOReader's progress sync would return
+            assert.are.same({ percent = 50, koreader_percent = 50 }, progress)
         end)
 
         it("uses Grimmory's reader progress in percent", function()

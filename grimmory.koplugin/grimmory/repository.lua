@@ -511,29 +511,28 @@ function GrimmoryLocalRepository:getReadingProgress(book_id, cutoff)
     local ok, result = with_database(
         self.database_path,
         function(conn)
+            -- The book's last event up to the cutoff (only its own events
+            -- are looked at: indexes in 4_indexes.sql)
             local stmt = conn:prepare([[
                 SELECT
                     book.grimmory_id,
                     book.book_path,
                     book.partial_md5,
 
-                    book_event.created_at,
-                    book_event.current_page,
-                    book_event.page_count,
-                    book_event.xpointer
-                FROM (
-                    SELECT
-                        s.book_id,
-                        MAX(e.id) AS event_id
-                    FROM book_event e
-                    JOIN book_session s ON s.id = e.session_id
+                    e.created_at,
+                    e.current_page,
+                    e.page_count,
+                    e.xpointer
+                FROM book
+                JOIN book_event AS e ON e.id = (
+                    SELECT MAX(e2.id)
+                    FROM book_event AS e2
+                    JOIN book_session AS s2 ON s2.id = e2.session_id
                     WHERE
-                        e.created_at <= ?
-                    GROUP BY s.book_id
-                ) AS last_event
-                JOIN book_event ON last_event.event_id = book_event.id
-                JOIN book_session ON book_event.session_id = book_session.id
-                JOIN book ON book_session.book_id = book.id
+                        s2.book_id = book.id
+                        AND
+                        e2.created_at <= ?
+                )
                 WHERE
                     book.id = ?
             ]])

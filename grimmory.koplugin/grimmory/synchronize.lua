@@ -7,6 +7,28 @@ local SmartDownload = require("grimmory/smart_download")
 
 local logger = GrimmoryLogger:new()
 
+--- Tell the UI what the sync is doing (shown in the progress sheet): a step
+--- of the sync, and where it is in it (e.g. book 3 of 6, and its title).
+---@param name string push | highlights | shelves | check | update | download | cleanup | book-info |
+---  smart-check | smart-download | book-info-one | book-highlights | book-progress
+local function stage(callback, name, current, total, title)
+    callback({ state = "stage", stage = name, current = current, total = total, title = title })
+end
+
+--- Report a download's progress (throttled by the API) to the UI.
+local function downloadProgress(callback)
+    return function(bytes, total)
+        callback({ state = "download-progress", bytes = bytes, total = total })
+    end
+end
+
+---@param book Book
+local function bookTitle(book)
+    return (book.metadata and book.metadata.title)
+        or (book.primary_file and book.primary_file.filename)
+        or tostring(book.id)
+end
+
 ---@class GrimmorySynchronize
 ---@field repository GrimmoryLocalRepository
 ---@field reading_annotations GrimmoryReadingAnnotations
@@ -282,6 +304,7 @@ function GrimmorySynchronize:pushAllPendingBookMetadata(callback)
             break
         end
 
+        stage(callback, "push", index, #book_ids)
         pcall(self.pushBookMetadata, self, book_id, callback)
 
         callback({
@@ -358,6 +381,8 @@ function GrimmorySynchronize:synchronizeShelves(callback)
         logger:info("Shelf sync skipped because feature is disabled")
         return
     end
+
+    stage(callback, "shelves")
 
     local ok, shelves = self.api:getShelves()
 
@@ -538,7 +563,8 @@ function GrimmorySynchronize:removeEmptyShelves(callback)
 end
 
 ---@return number | nil percent The position taken over from Grimmory, if any
-function GrimmorySynchronize:pullBookProgress(book_path)
+---@param server_progress GrimmoryServerProgress | nil From the book list, if known
+function GrimmorySynchronize:pullBookProgress(book_path, server_progress)
     if not self.settings:getSyncReadingProgress() then
         return nil
     end
@@ -555,7 +581,8 @@ function GrimmorySynchronize:pullBookProgress(book_path)
     -- Only adopt remote progress when it is newer than what was recorded
     -- locally, otherwise local reading that has not been pushed yet (e.g.
     -- a failed push) would be overwritten by older remote progress.
-    local _, _, progress = self.reading_progress_manager:getNewerProgressForBook(book_path)
+    local _, _, progress = self.reading_progress_manager:getNewerProgressForBook(
+        book_path, server_progress and server_progress.koreader_percent)
 
     if progress then
         self.reading_progress_manager:applyProgress(progress)
@@ -791,11 +818,12 @@ end
 ---@param book Book
 ---@return string download_path
 ---@return boolean is_downloaded
-function GrimmorySynchronize:pullBook(book, on_download_progress)
+---@param known_download_path string | nil getBookDownloadPath(book), if already known
+function GrimmorySynchronize:pullBook(book, on_download_progress, known_download_path)
     local book_exists = false
     local is_downloaded = false
 
-    local download_path = self:getBookDownloadPath(book)
+    local download_path = known_download_path or self:getBookDownloadPath(book)
 
     -- TODO: Search through known books from collections for this book
     --       If found, set the `download path to that value.
@@ -828,7 +856,7 @@ function GrimmorySynchronize:pullBook(book, on_download_progress)
         -- After we're done, if the book exists we should attach it
         -- to associated shelves and pull the book progress.
         self:associateWithShelves(download_path, book.shelves or {})
-        self:pullBookProgress(download_path)
+        self:pullBookProgress(download_path, book.server_progress)
 
         if is_downloaded then
             self:applyServerProgress(download_path, book.server_progress)
@@ -985,18 +1013,32 @@ function GrimmorySynchronize:smartDownload(callback, only_series)
     local ahead_books = self.settings:getSmartAheadBooks()
     local ahead_comics = self.settings:getSmartAheadComics()
 
-    for _, series_name in ipairs(names) do
+    -- First what is missing in all series (so downloads can count "1 of 3")
+    local missing = {}
+    local seen_ids = {}
+    for index, series_name in ipairs(names) do
+        stage(callback, "smart-check", index, #names, series_name)
         local ok, books = self:loadSeriesBooks(series_name)
 
         if not ok then
             logger:err("Smart download: could not load series", series_name, books)
         elseif self.settings:isSmartDownloadSeries(series_name, SmartDownload.isInProgress(books)) then
-            for _, volume in ipairs(SmartDownload.selectVolumes(books, ahead_books, ahead_comics)) do
-                if not self:isOnDevice(volume.id) then
-                    self:smartDownloadVolume(volume, callback)
+            local volumes = SmartDownload.selectVolumes(books, ahead_books, ahead_comics)
+            logger:info("Smart download:", series_name, "- volumes:",
+                SmartDownload.describe(SmartDownload.sortVolumes(books)),
+                "- to keep:", SmartDownload.describe(volumes))
+            for _, volume in ipairs(volumes) do
+                if not seen_ids[volume.id] and not self:isOnDevice(volume.id) then
+                    seen_ids[volume.id] = true
+                    table.insert(missing, volume)
                 end
             end
         end
+    end
+
+    for index, volume in ipairs(missing) do
+        stage(callback, "smart-download", index, #missing, volume.title)
+        self:smartDownloadVolume(volume, callback)
     end
 end
 
@@ -1017,7 +1059,7 @@ function GrimmorySynchronize:smartDownloadVolume(volume, callback)
         server_progress = volume.read_progress and { percent = volume.read_progress } or nil,
     }
 
-    local ok, book_path = pcall(self.pullBook, self, book)
+    local ok, book_path = pcall(self.pullBook, self, book, downloadProgress(callback))
 
     if not ok then
         logger:err("Smart download failed:", volume.id, book_path)
@@ -1100,44 +1142,23 @@ function GrimmorySynchronize:pullBooks(callback)
 
     local sync_book_info = self.settings:getSyncBookInfo()
 
+    -- First the whole list: which books to keep, and which of them are not
+    -- on the device yet (so downloads can count "3 of 6")
+    local on_device = {}
+    local to_download = {}
     for book, element_count, total_books in self.api:getBooks() do
+        stage(callback, "check", element_count, total_books)
+
         if self:isTargetBook(book) then
             seen_grimmory_ids[tostring(book.id)] = true
 
-            local pull_ok, pull_path_or_message, is_downloaded = pcall(self.pullBook, self, book)
-            if pull_ok then
-                seen_books[pull_path_or_message] = true
-
-                if sync_book_info then
-                    self:applyBookInfo(pull_path_or_message, book.metadata, callback)
-                end
-
-                if is_downloaded then
-                    callback({
-                        state = "book-downloaded",
-                        book_id = book.id,
-                        book_path = pull_path_or_message,
-                        viewed_books = element_count,
-                        total_books = total_books,
-                    })
-                else
-                    callback({
-                        state = "book-pull-metadata",
-                        book_id = book.id,
-                        book_path = pull_path_or_message,
-                        viewed_books = element_count,
-                        total_books = total_books,
-                    })
-                end
+            -- (pullBook reports a failure here, e.g. no download folder)
+            local path_ok, download_path = pcall(self.getBookDownloadPath, self, book)
+            local entry = { book = book, path = path_ok and download_path or nil }
+            if entry.path and util.fileExists(entry.path) then
+                table.insert(on_device, entry)
             else
-                logger:err("Book failed to pull:", book.id, "-", pull_path_or_message)
-                callback({
-                    state = "book-error",
-                    book_id = book.id,
-                    message = pull_path_or_message,
-                    viewed_books = element_count,
-                    total_books = total_books,
-                })
+                table.insert(to_download, entry)
             end
         elseif sync_book_info then
             -- Not downloaded by the sync, but on the device (e.g. linked)
@@ -1147,7 +1168,53 @@ function GrimmorySynchronize:pullBooks(callback)
         end
     end
 
+    local total = #on_device + #to_download
+    local done = 0
+
+    local function pull(entry, on_download_progress)
+        local book = entry.book
+        done = done + 1
+        local pull_ok, pull_path_or_message, is_downloaded = pcall(
+            self.pullBook, self, book, on_download_progress, entry.path)
+        if pull_ok then
+            seen_books[pull_path_or_message] = true
+
+            if sync_book_info then
+                self:applyBookInfo(pull_path_or_message, book.metadata, callback)
+            end
+
+            callback({
+                state = is_downloaded and "book-downloaded" or "book-pull-metadata",
+                book_id = book.id,
+                book_path = pull_path_or_message,
+                viewed_books = done,
+                total_books = total,
+            })
+        else
+            logger:err("Book failed to pull:", book.id, "-", pull_path_or_message)
+            callback({
+                state = "book-error",
+                book_id = book.id,
+                message = pull_path_or_message,
+                viewed_books = done,
+                total_books = total,
+            })
+        end
+    end
+
+    -- The books already here first (quick: progress and shelves), then the
+    -- downloads
+    for index, entry in ipairs(on_device) do
+        stage(callback, "update", index, #on_device, bookTitle(entry.book))
+        pull(entry)
+    end
+    for index, entry in ipairs(to_download) do
+        stage(callback, "download", index, #to_download, bookTitle(entry.book))
+        pull(entry, downloadProgress(callback))
+    end
+
     logger:dbg("Checking existing books on disk in download directory")
+    stage(callback, "cleanup")
 
     -- Iterate through books in download directory and
     -- remove when not in the `seen_books` set
@@ -1251,7 +1318,8 @@ end
 --- Book information of every Grimmory book on the device, for when the
 --- book pull (which does it on the way) is off
 function GrimmorySynchronize:updateAllBookInfo(callback)
-    for book in self.api:getBooks() do
+    for book, element_count, total_books in self.api:getBooks() do
+        stage(callback, "book-info", element_count, total_books)
         for _, path in ipairs(self:getLocalPaths(book.id)) do
             self:applyBookInfo(path, book.metadata, callback)
         end
@@ -1283,7 +1351,16 @@ end
 function GrimmorySynchronize:pushPendingBooks(pending, open_book_path, callback)
     local lfs = require("libs/libkoreader-lfs")
 
-    for book_path, kinds in pairs(pending or {}) do
+    local paths = {}
+    for book_path in pairs(pending or {}) do
+        table.insert(paths, book_path)
+    end
+    table.sort(paths)
+
+    for index, book_path in ipairs(paths) do
+        local kinds = pending[book_path]
+        stage(callback, "highlights", index, #paths)
+
         local function done(kind)
             callback({ state = "pending-synced", book_path = book_path, kind = kind })
         end
@@ -1490,6 +1567,7 @@ function GrimmorySynchronize:synchronizeBook(book_path, refresh_book, callback)
 
     -- Title, authors, series, ... from Grimmory
     if grimmory_id and self.settings:getSyncBookInfo() then
+        stage(callback, "book-info-one")
         local detail_ok, detail = self.api:getAppBookDetail(grimmory_id)
         if detail_ok then
             result.info_changed = self:applyBookInfo(book_path, {
@@ -1509,6 +1587,7 @@ function GrimmorySynchronize:synchronizeBook(book_path, refresh_book, callback)
 
     -- Push / pull annotations with Grimmory
     if grimmory_id and self.settings:getSyncAnnotations() then
+        stage(callback, "book-highlights")
         -- Annotation errors (e.g. a position that cannot be converted to a
         -- CFI) must not prevent progress and sessions from being pushed.
         logger:info("Pushing book annotations:", book_path)
@@ -1537,6 +1616,7 @@ function GrimmorySynchronize:synchronizeBook(book_path, refresh_book, callback)
 
     -- First, tell Grimmory about all of our reading
     logger:info("Pushing pending book metadata:", book_path)
+    stage(callback, "book-progress")
     self:pushBookMetadata(book_id, callback)
 
     callback({
