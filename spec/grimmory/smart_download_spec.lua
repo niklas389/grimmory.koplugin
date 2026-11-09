@@ -83,6 +83,8 @@ local function series(...)
             series_name = "Saga",
             series_number = index,
             read_status = status,
+            -- Volumes being read have some progress
+            read_progress = (status == "READING" or status == "RE_READING") and 40 or nil,
             primary_file_name = "volume_" .. index .. ".epub",
             primary_file_type = "EPUB",
         })
@@ -193,14 +195,20 @@ describe("Smart download", function()
             assert.is_false(SmartDownload.isInProgress(books))
         end)
 
-        it("counts a volume being read from a little progress on, or with unknown progress", function()
+        it("counts a volume being read from a little progress on", function()
             local books = series("READ", "READING", "UNREAD")
             books[2].read_progress = 1.5
             assert.are.same({ 2, 3 }, ids(SmartDownload.selectVolumes(books, 1, 3)))
-
-            books[2].read_progress = nil
-            assert.are.same({ 2, 3 }, ids(SmartDownload.selectVolumes(books, 1, 3)))
             assert.is_true(SmartDownload.isInProgress(books))
+        end)
+
+        it("does not count a volume still marked as being read after its progress was reset", function()
+            -- The server's 0 % arrives as no progress (nil)
+            local books = as_comics(series("UNREAD", "UNREAD", "UNREAD", "READING", "UNREAD", "UNREAD"))
+            books[4].read_progress = nil
+            assert.are.same({ 1, 2, 3 }, ids(SmartDownload.selectVolumes(books, 1, 3)))
+            assert.is_false(SmartDownload.isInProgress(books))
+            assert.truthy(SmartDownload.describe(books):find("4 READING (no progress)", 1, true))
         end)
 
         it("skips volumes without a file", function()
