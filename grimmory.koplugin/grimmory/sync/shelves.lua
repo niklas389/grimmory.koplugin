@@ -24,7 +24,15 @@ function GrimmorySynchronize:isTargetBook(book)
         return false
     end
 
-    if self.settings:getDownloadEverything() or self.settings:isKeptBook(book.id) then
+    return self.settings:isKeptBook(book.id) or self:isInDownloadSources(book)
+end
+
+---@param book Book
+---@return boolean
+--- Whether the book is in a download source (everything, or a chosen
+--- library, series, shelf or magic shelf).
+function GrimmorySynchronize:isInDownloadSources(book)
+    if self.settings:getDownloadEverything() then
         return true
     end
 

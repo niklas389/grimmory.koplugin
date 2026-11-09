@@ -158,6 +158,10 @@ three ahead).  Both counts can be changed in the menu.
 
 It runs with every sync and after closing a book of a series.  Volumes it
 downloads stay on the device, also when they are not in a download source.
+A volume deleted from the device is not brought back by the sync (only by
+smart download itself, while it still is one of the volumes to keep); the
+same goes for books downloaded from the library browser.  A volume marked
+"reading" counts as the one being read only with at least 1 % progress.
 Volumes are ordered by their series number in Grimmory (without one, by a
 number the file name starts with, e.g. `03 Title (2020).cbz`).  KOReader's
 log lists, for each series, the volumes as smart download sees them (number

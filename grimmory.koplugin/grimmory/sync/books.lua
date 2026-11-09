@@ -375,8 +375,17 @@ function GrimmorySynchronize:pullBooks(callback)
             local entry = { book = book, path = path_ok and download_path or nil }
             if entry.path and util.fileExists(entry.path) then
                 table.insert(on_device, entry)
-            else
+            elseif self:isInDownloadSources(book) then
                 table.insert(to_download, entry)
+            else
+                -- Kept (downloaded from the library browser or by smart
+                -- download), but deleted from the device since: keeping it
+                -- means not removing it, not bringing it back.  Forget it
+                -- (smart download fetches it again if it is still needed).
+                logger:info("Kept book deleted from the device, not downloaded again:", book.id)
+                seen_grimmory_ids[tostring(book.id)] = nil
+                self.settings:setKeptBook(book.id, false, true)
+                callback({ state = "kept-book-removed", book_id = book.id })
             end
         elseif sync_book_info then
             -- Not downloaded by the sync, but on the device (e.g. linked)

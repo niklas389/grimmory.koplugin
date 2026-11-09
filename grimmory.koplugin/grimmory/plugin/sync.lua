@@ -386,6 +386,11 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
                     table.insert(info_updated_paths, progress.book_path)
                 end
 
+                if progress.state == "kept-book-removed" then
+                    -- Deleted from the device: no longer kept (the subprocess cannot save that)
+                    self.settings:setKeptBook(progress.book_id, false)
+                end
+
                 if progress.state == "smart-download" then
                     -- Keep it on the device (the subprocess cannot save that)
                     self.settings:setKeptBook(progress.book_id, true)
