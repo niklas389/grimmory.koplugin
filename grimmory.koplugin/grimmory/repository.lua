@@ -395,6 +395,68 @@ end
 --- Local paths of all books linked to Grimmory, by Grimmory ID, in one query.
 --- The files are not checked; callers check the ones they show.
 ---@return { [string]: string[] } paths
+--- The Grimmory book of another local record of the same file path (e.g. a
+--- copy downloaded again after the book was replaced in Grimmory).
+---@param book_id integer The record not to take
+---@param book_path string
+---@param stale_grimmory_id integer | nil A Grimmory ID not to take
+---@return integer | nil grimmory_id
+function GrimmoryLocalRepository:findOtherGrimmoryIdForPath(book_id, book_path, stale_grimmory_id)
+    local ok, grimmory_id = with_database(
+        self.database_path,
+        function(conn)
+            local stmt = conn:prepare([[
+                SELECT grimmory_id
+                FROM book
+                WHERE
+                    book_path = ?
+                    AND id <> ?
+                    AND grimmory_id IS NOT NULL
+                    AND grimmory_id <> ?
+                ORDER BY id DESC
+            ]])
+            stmt:bind(book_path, book_id, stale_grimmory_id or -1)
+            local row = stmt:step()
+            stmt:close()
+            return row and tonumber(row[1]) or nil
+        end
+    )
+
+    if not ok then
+        logger:err("Failed to find book by path:", book_path, "-", grimmory_id)
+        return nil
+    end
+
+    return grimmory_id
+end
+
+--- Link a local record to another Grimmory book, or to none (nil).
+---@return boolean ok
+function GrimmoryLocalRepository:setGrimmoryId(book_id, grimmory_id)
+    local ok, message = with_database(
+        self.database_path,
+        function(conn)
+            local stmt
+            if grimmory_id then
+                stmt = conn:prepare("UPDATE book SET grimmory_id = ? WHERE id = ?")
+                stmt:bind(grimmory_id, book_id)
+            else
+                stmt = conn:prepare("UPDATE book SET grimmory_id = NULL WHERE id = ?")
+                stmt:bind(book_id)
+            end
+            stmt:step()
+            stmt:close()
+        end,
+        "rw"
+    )
+
+    if not ok then
+        logger:err("Failed to link book:", book_id, grimmory_id, "-", message)
+    end
+
+    return ok
+end
+
 function GrimmoryLocalRepository:getGrimmoryBookPaths()
     local ok, paths = with_database(
         self.database_path,

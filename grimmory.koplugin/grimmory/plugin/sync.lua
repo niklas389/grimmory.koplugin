@@ -329,6 +329,7 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
         local session_count = 0
         local session_error_count = 0
         local session_error_reason = nil
+        local sessions_dropped_count = 0
         local book_download_count = 0
         local book_refresh_count = 0
         local book_error_count = 0
@@ -411,6 +412,8 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
                 elseif progress.state == "session-error" then
                     session_error_count = session_error_count + 1
                     session_error_reason = session_error_reason or progress.message
+                elseif progress.state == "sessions-dropped" then
+                    sessions_dropped_count = sessions_dropped_count + 1
                 elseif progress.state == "book-downloaded" then
                     book_download_count = book_download_count + 1
 
@@ -591,6 +594,11 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
                 else
                     table.insert(message, T(_("%1 session(s) failed"), session_error_count))
                 end
+            end
+
+            if sessions_dropped_count > 0 then
+                table.insert(message, T(_("Reading sessions of %1 book(s) no longer in Grimmory dropped"),
+                    sessions_dropped_count))
             end
 
             if book_download_count > 0 then

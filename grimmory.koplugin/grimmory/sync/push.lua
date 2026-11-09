@@ -70,7 +70,13 @@ end
 
 ---@param book_id integer
 ---@param callback function
-function GrimmorySynchronize:pushBookSessions(book_id, callback)
+--- Whether Grimmory answered that the linked book does not exist (any more)
+local function isBookGone(code, body)
+    return code == 404 or (type(body) == "string" and body:lower():find("book not found", 1, true) ~= nil)
+end
+
+---@param is_retry boolean | nil Sent again after the book was linked to its new Grimmory ID
+function GrimmorySynchronize:pushBookSessions(book_id, callback, is_retry)
     if not self.settings:getSyncReadingSessions() then
         -- Since the reading session sync is disabled, skip them.
         logger:dbg("Reading sessions skipped because feature is disabled for:", book_id)
@@ -127,7 +133,7 @@ function GrimmorySynchronize:pushBookSessions(book_id, callback)
                 session.end_page
             )
 
-            local ok, body = self.api:recordSession(
+            local ok, body, code = self.api:recordSession(
                 session.grimmory_id,
                 session.start_time,
                 session.end_time,
@@ -147,6 +153,30 @@ function GrimmorySynchronize:pushBookSessions(book_id, callback)
                 })
 
                 self.repository:updateBookSyncTimestamp(book_id, "sessions", session.end_time)
+            elseif not is_retry and isBookGone(code, body) then
+                -- The linked Grimmory book is gone (deleted, or replaced by a
+                -- new upload with a new ID).  A copy of the same file linked
+                -- to the current book (downloaded again) takes its sessions.
+                local new_id = self.repository:findOtherGrimmoryIdForPath(
+                    book_id, session.book_path, session.grimmory_id)
+                if new_id then
+                    logger:info("Book replaced in Grimmory, sessions go to its new ID:",
+                        session.book_path, session.grimmory_id, "->", new_id)
+                    self.repository:setGrimmoryId(book_id, new_id)
+                    return self:pushBookSessions(book_id, callback, true)
+                end
+
+                -- Nowhere to record them: drop them, and the link, instead
+                -- of failing with every sync
+                logger:info("Book no longer in Grimmory, its sessions are dropped:",
+                    session.book_path, session.grimmory_id)
+                self.repository:setGrimmoryId(book_id, nil)
+                self.repository:updateBookSyncTimestamp(book_id, "sessions", sessions[#sessions].end_time)
+                callback({
+                    state = "sessions-dropped",
+                    bookPath = session.book_path,
+                })
+                break
             else
                 logger:err("Session failed recording with error for book: ", book_id, session.book_path, " - ", body)
                 callback({

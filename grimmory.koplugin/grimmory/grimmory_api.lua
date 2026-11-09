@@ -825,7 +825,7 @@ function GrimmoryAPI:recordSession(
         endLocation = end_location,
     }
 
-    local ok, _, body = self:request(
+    local ok, code, body = self:request(
         "POST",
         "/api/v1/reading-sessions",
         request
@@ -835,7 +835,7 @@ function GrimmoryAPI:recordSession(
         logger:err("Unable to record session", body)
     end
 
-    return ok, body
+    return ok, body, code
 end
 
 function GrimmoryAPI:getKoreaderSync()
