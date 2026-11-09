@@ -171,6 +171,16 @@ local function showButtonDialog(opts)
         buttons = buttons,
         tap_close_callback = opts.on_dismiss,
     })
+    if opts.on_close then
+        -- Whenever it closes, like SimpleUI's on_close
+        local on_close_widget = dialog.onCloseWidget
+        function dialog:onCloseWidget(...)
+            if on_close_widget then
+                on_close_widget(self, ...)
+            end
+            opts.on_close()
+        end
+    end
     UIManager:show(dialog)
 
     return {

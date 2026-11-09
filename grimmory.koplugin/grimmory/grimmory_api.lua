@@ -766,6 +766,18 @@ end
 ---@param end_progress number
 ---@param start_location string
 ---@param end_location string
+-- Grimmory's book types, by file extension (what was read)
+local BOOK_TYPES = {
+    epub = "EPUB", pdf = "PDF", fb2 = "FB2", mobi = "MOBI", azw3 = "AZW3",
+    cbz = "CBX", cbr = "CBX", cb7 = "CBX", cbt = "CBX",
+}
+
+--- Grimmory's book type of a file ("EPUB" when unknown)
+function GrimmoryAPI.bookTypeOf(path)
+    local extension = tostring(path or ""):match("%.([%w]+)$")
+    return extension and BOOK_TYPES[extension:lower()] or "EPUB"
+end
+
 function GrimmoryAPI:recordSession(
     book_id,
     start_time,
@@ -773,12 +785,13 @@ function GrimmoryAPI:recordSession(
     start_progress,
     end_progress,
     start_location,
-    end_location
+    end_location,
+    book_type
 )
     local duration_seconds = end_time - start_time
     local progress_delta = math.max(0, end_progress - start_progress)
 
-    local book_type = "EPUB"
+    book_type = book_type or "EPUB"
 
     local request = {
         bookId = book_id,

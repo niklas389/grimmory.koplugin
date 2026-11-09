@@ -126,7 +126,8 @@ function GrimmorySynchronize:pushBookSessions(book_id, callback)
                 session.start_progress,
                 session.end_progress,
                 tostring(session.start_page),
-                tostring(session.end_page)
+                tostring(session.end_page),
+                self.api.bookTypeOf(session.book_path)
             )
 
             if ok then
@@ -139,11 +140,13 @@ function GrimmorySynchronize:pushBookSessions(book_id, callback)
 
                 self.repository:updateBookSyncTimestamp(book_id, "sessions", session.end_time)
             else
-                logger:err("Session failed recording with error for book: ", book_id, " - ", body)
+                logger:err("Session failed recording with error for book: ", book_id, session.book_path, " - ", body)
                 callback({
                     state = "session-error",
                     bookPath = session.book_path,
                     since = session.end_time,
+                    -- Why, as the server says (shown after the sync)
+                    message = type(body) == "string" and body or nil,
                 })
 
                 -- If an error happens for this session we bail early so

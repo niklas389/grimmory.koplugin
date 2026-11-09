@@ -54,6 +54,15 @@ describe("Reading progress from the server", function()
         end)
     end)
 
+    describe("bookTypeOf", function()
+        it("names Grimmory's book type by the file extension", function()
+            assert.are.equal("CBX", GrimmoryAPI.bookTypeOf("/books/03 Manga (2020).cbz"))
+            assert.are.equal("PDF", GrimmoryAPI.bookTypeOf("/books/Paper.PDF"))
+            assert.are.equal("EPUB", GrimmoryAPI.bookTypeOf("/books/Novel.epub"))
+            assert.are.equal("EPUB", GrimmoryAPI.bookTypeOf(nil))
+        end)
+    end)
+
     describe("parseServerProgress", function()
         local parse = GrimmoryAPI.parseServerProgress
 
