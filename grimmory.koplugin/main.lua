@@ -27,6 +27,7 @@ local GrimmorySynchronize = require("grimmory/synchronize")
 local GrimmoryScheduler = require("grimmory/scheduler")
 local GrimmorySelfUpdater = require("grimmory/ota/self_updater")
 local GithubAPI = require("grimmory/ota/github_api")
+local HttpClient = require("grimmory/http_client")
 local GrimmoryLogger = require("grimmory/logger")
 local GrimmoryReadingRecorder = require("grimmory/reading/recorder")
 local GrimmoryLocalRepository = require("grimmory/repository")
@@ -696,6 +697,9 @@ end
 
 --- WiFi connected (by the user, KOReader or a plugin): send what is pending
 function Grimmory:onNetworkConnected()
+    -- A new connection (maybe another network): try servers again that did
+    -- not answer before
+    HttpClient.forgetUnreachable()
     self:scheduleRetry(RETRY_DELAY_SECONDS)
 end
 

@@ -60,6 +60,14 @@ Each page is loaded with exactly the books it shows; covers load three at a
 time, and connections to the server are kept open between requests (no new
 connection and TLS handshake for every cover), which matters most over the
 Internet.  Loaded pages are kept for 10 minutes ("⋯" -> Refresh reloads).
+Loading never freezes KOReader: while the server answers, a cloud shows in
+the top bar, and Back and the tabs keep working.
+
+When the server does not answer (e.g. a firewall or CrowdSec blocks the
+device's address), the plugin gives up after 10 seconds of connecting or 30
+seconds without data (60 for syncs and downloads), shows "The Grimmory
+server is not reachable." and, for the next 30 seconds, does not try again
+(Retry, or WiFi connecting again, tries at once).
 A book downloaded here opens where it was left on the server, also when it
 was read in Grimmory's own reader.  The browser needs a
 Grimmory version with the app API (`/api/v1/app`).
