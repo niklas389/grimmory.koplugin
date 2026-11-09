@@ -179,6 +179,7 @@ end
 ---@class GrimmoryServerProgress
 ---@field percent number | nil 0 - 100
 ---@field page number | nil For page based formats
+---@field koreader_percent number | nil 0 - 100, the KOReader progress (what the progress sync returns)
 
 ---@return GrimmoryServerProgress | nil
 local function parse_server_progress(raw, read_status, fallback_percent)
@@ -217,7 +218,11 @@ local function parse_server_progress(raw, read_status, fallback_percent)
         return nil
     end
 
-    return { percent = percent and math.min(100, math.max(0, percent)) or nil, page = page }
+    return {
+        percent = percent and math.min(100, math.max(0, percent)) or nil,
+        page = page,
+        koreader_percent = koreader and tonumber(koreader.percentage) and tonumber(koreader.percentage) * 100 or nil,
+    }
 end
 
 --- Strings of a JSON list (or set) in their order; empty when missing
@@ -312,8 +317,14 @@ function GrimmoryAPI:new(o)
 end
 
 function GrimmoryAPI:init()
-    -- TODO: Watch base URI / username / password fields to reset access token
+end
 
+--- Drop the cached login (tokens).
+function GrimmoryAPI:forgetToken()
+    self.cached_token_expiry = nil
+    self.cached_refresh_token = nil
+    self.cached_access_token = nil
+    self.token_owner = nil
 end
 
 function GrimmoryAPI:getUri(path)
@@ -461,7 +472,15 @@ function GrimmoryAPI:request(method, path, data, headers, sink, is_retry)
 
     local uri = self:getUri(path)
 
-    if self.cached_refresh_token ~= nil and self.cached_token_expiry <= os.time() then
+    -- The login belongs to a server and user: after either changed in the
+    -- settings, its token must not be sent (to another server, or as the
+    -- previous user)
+    local owner = self.settings:getBaseUri() .. "\n" .. tostring(self.settings:getUsername())
+    if self.token_owner ~= owner then
+        self:forgetToken()
+    end
+
+    if self.cached_refresh_token ~= nil and (self.cached_token_expiry or 0) <= os.time() then
         -- If token exists but is expired, try to refresh
 
         local refresk_token_ok, access_token, refresh_token, expiration = self:refreshToken(
@@ -475,9 +494,7 @@ function GrimmoryAPI:request(method, path, data, headers, sink, is_retry)
         else
             -- We're expired and can't refresh.  Toss out the cached
             -- token data and let the block below do its deal.
-            self.cached_token_expiry = 0
-            self.cached_refresh_token = nil
-            self.cached_access_token = nil
+            self:forgetToken()
         end
     end
 
@@ -499,6 +516,7 @@ function GrimmoryAPI:request(method, path, data, headers, sink, is_retry)
         self.cached_token_expiry = os.time() + (expiration or 3600)
         self.cached_refresh_token = refresh_token
         self.cached_access_token = access_token
+        self.token_owner = owner
     end
 
     if self.cached_access_token then
@@ -509,9 +527,7 @@ function GrimmoryAPI:request(method, path, data, headers, sink, is_retry)
 
     if code == 401 then
         logger:warn("Token expired or was otherwise invalid")
-        self.cached_token_expiry = nil
-        self.cached_refresh_token = nil
-        self.cached_access_token = nil
+        self:forgetToken()
 
         -- Retry once with a fresh token.  Not possible with a caller-provided
         -- sink, which has already consumed the (error) response body.

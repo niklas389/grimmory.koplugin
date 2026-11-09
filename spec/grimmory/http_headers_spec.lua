@@ -160,4 +160,48 @@ describe("Custom HTTP headers", function()
             assert.is_nil(last_request.headers["X-Evil"])
         end)
     end)
+
+    describe("login", function()
+        local api, logins, sent
+
+        before_each(function()
+            api = GrimmoryAPI:new({ settings = settings })
+            logins, sent = {}, {}
+            api.getToken = function(_, base_uri, username)
+                table.insert(logins, base_uri .. " " .. username)
+                return true, "token for " .. base_uri .. " " .. username, "refresh", 3600
+            end
+            api.rawRequest = function(_, _, uri, _, headers)
+                table.insert(sent, { uri = uri, authorization = headers["Authorization"] })
+                return true, 200, {}
+            end
+            settings:setBaseUri("https://one.example")
+            settings:setUsername("reader")
+        end)
+
+        it("logs in once and reuses the token", function()
+            api:request("GET", "/a")
+            api:request("GET", "/b")
+
+            assert.are.same({ "https://one.example reader" }, logins)
+            assert.are.equal("Bearer token for https://one.example reader", sent[2].authorization)
+        end)
+
+        it("does not send the token to another server or as another user", function()
+            api:request("GET", "/a")
+            settings:setBaseUri("https://two.example")
+            api:request("GET", "/b")
+            settings:setUsername("other")
+            api:request("GET", "/c")
+
+            assert.are.same(
+                { "https://one.example reader", "https://two.example reader", "https://two.example other" },
+                logins)
+            assert.are.same({
+                uri = "https://two.example/b",
+                authorization = "Bearer token for https://two.example reader",
+            }, sent[2])
+            assert.are.equal("Bearer token for https://two.example other", sent[3].authorization)
+        end)
+    end)
 end)

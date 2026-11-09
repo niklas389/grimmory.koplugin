@@ -563,7 +563,8 @@ function GrimmorySynchronize:removeEmptyShelves(callback)
 end
 
 ---@return number | nil percent The position taken over from Grimmory, if any
-function GrimmorySynchronize:pullBookProgress(book_path)
+---@param server_progress GrimmoryServerProgress | nil From the book list, if known
+function GrimmorySynchronize:pullBookProgress(book_path, server_progress)
     if not self.settings:getSyncReadingProgress() then
         return nil
     end
@@ -580,7 +581,8 @@ function GrimmorySynchronize:pullBookProgress(book_path)
     -- Only adopt remote progress when it is newer than what was recorded
     -- locally, otherwise local reading that has not been pushed yet (e.g.
     -- a failed push) would be overwritten by older remote progress.
-    local _, _, progress = self.reading_progress_manager:getNewerProgressForBook(book_path)
+    local _, _, progress = self.reading_progress_manager:getNewerProgressForBook(
+        book_path, server_progress and server_progress.koreader_percent)
 
     if progress then
         self.reading_progress_manager:applyProgress(progress)
@@ -854,7 +856,7 @@ function GrimmorySynchronize:pullBook(book, on_download_progress, known_download
         -- After we're done, if the book exists we should attach it
         -- to associated shelves and pull the book progress.
         self:associateWithShelves(download_path, book.shelves or {})
-        self:pullBookProgress(download_path)
+        self:pullBookProgress(download_path, book.server_progress)
 
         if is_downloaded then
             self:applyServerProgress(download_path, book.server_progress)
