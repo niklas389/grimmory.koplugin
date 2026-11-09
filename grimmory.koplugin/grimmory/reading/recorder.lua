@@ -1,5 +1,10 @@
 local GrimmoryLogger = require("grimmory/logger")
 
+-- Page turns are written this long after the first unwritten one, together
+-- (not while the page changes: a database write per page turn costs time on
+-- e-readers).  A crash loses at most these seconds of page turns.
+local PAGE_WRITE_DELAY = 2
+
 local logger = GrimmoryLogger:new()
 
 ---@class ReadingRecorder
@@ -19,7 +24,22 @@ function ReadingRecorder:new(o)
 end
 
 function ReadingRecorder:init()
+    self.pending_events = {}
+end
 
+--- Write the page turns not written yet (before anything reads the events:
+--- a sync, the end of a session, suspend).
+function ReadingRecorder:flush()
+    if self.flush_task then
+        require("ui/uimanager"):unschedule(self.flush_task)
+        self.flush_task = nil
+    end
+    if #self.pending_events == 0 then
+        return
+    end
+    local events = self.pending_events
+    self.pending_events = {}
+    self.repository:insertBookEvents(events)
 end
 
 ---@return number page
@@ -81,11 +101,26 @@ function ReadingRecorder:emitSessionEvent(session_id, event_type)
         return
     end
 
-    local current_page = self:getOpenBookCurrentPage()
-    local total_pages = self:getOpenBookTotalPages()
-    local xpointer = self:getOpenBookXPointer()
+    table.insert(self.pending_events, {
+        session_id = session_id,
+        created_at = os.time(),
+        event_type = event_type,
+        current_page = self:getOpenBookCurrentPage(),
+        page_count = self:getOpenBookTotalPages(),
+        xpointer = self:getOpenBookXPointer(),
+    })
 
-    self.repository:insertBookEvent(session_id, event_type, current_page, total_pages, xpointer)
+    if event_type ~= "page" then
+        -- Session starts and ends, highlights: at once (with the page turns
+        -- before them, in their order)
+        self:flush()
+    elseif not self.flush_task then
+        self.flush_task = function()
+            self.flush_task = nil
+            self:flush()
+        end
+        require("ui/uimanager"):scheduleIn(PAGE_WRITE_DELAY, self.flush_task)
+    end
 end
 
 function ReadingRecorder:onSessionStart()
@@ -173,6 +208,7 @@ function ReadingRecorder:onSessionEnd()
     if self.session_id ~= nil then
         self:emitSessionEvent(self.session_id, "session-end")
     end
+    self:flush()
 
     self.last_page = nil
     self.session_id = nil

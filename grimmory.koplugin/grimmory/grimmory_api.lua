@@ -595,10 +595,14 @@ end
 ---@return boolean ok
 ---@return Book[] | string page_books
 ---@return number total_count
+-- Books per page of the book list (the server's default is smaller; fewer
+-- pages are fewer requests in every sync)
+local BOOK_PAGE_SIZE = 100
+
 function GrimmoryAPI:getBooksPage(page_number)
     local ok, _, body = self:request(
         "GET",
-        "/api/v1/books/page?sort=addedOn&page=" .. tostring(page_number or 0)
+        "/api/v1/books/page?sort=addedOn&page=" .. tostring(page_number or 0) .. "&size=" .. BOOK_PAGE_SIZE
     )
 
     if not ok or type(body) ~= "table" then
@@ -621,6 +625,12 @@ function GrimmoryAPI:getBooksPage(page_number)
     local total_count = 0
     if type(body.page) == "table" and type(body.page.totalElements) == "number" then
         total_count = body.page.totalElements
+    end
+    if (page_number or 0) == 0 then
+        -- Whether the server took the page size (it may cap or ignore it)
+        local page_size = type(body.page) == "table" and tonumber(body.page.size) or nil
+        logger:info("Book list:", total_count, "books,", page_size or #books, "per page (asked for "
+            .. BOOK_PAGE_SIZE .. ")")
     end
 
     return ok, books, total_count

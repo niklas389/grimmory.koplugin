@@ -2,6 +2,7 @@ local ReadCollection = require("readcollection")
 local md5 = require("ffi/MD5")
 local util = require("util")
 
+local Fingerprint = require("grimmory/fingerprint")
 local GrimmoryLogger = require("grimmory/logger")
 local SmartDownload = require("grimmory/smart_download")
 
@@ -617,7 +618,7 @@ function GrimmorySynchronize:getBookDownloadPath(book)
         for _, local_book in ipairs(existing_books) do
             if (
                 util.fileExists(local_book.book_path) and
-                util.partialMD5(local_book.book_path) == local_book.book_md5
+                Fingerprint.partialMD5(local_book.book_path) == local_book.book_md5
             ) then
                 return local_book.book_path
             end
@@ -758,8 +759,8 @@ function GrimmorySynchronize:refreshBook(book_path, book_id, grimmory_id)
         return true, book_id, false
     end
 
-    local temp_partial_md5 = util.partialMD5(temp_path)
-    local book_partial_md5 = util.partialMD5(book_path)
+    local temp_partial_md5 = Fingerprint.partialMD5(temp_path)
+    local book_partial_md5 = Fingerprint.partialMD5(book_path)
 
 
     local backup_path = book_path .. ".bak"
@@ -1233,7 +1234,7 @@ function GrimmorySynchronize:pullBooks(callback)
                     return
                 end
 
-                local partial_md5 = util.partialMD5(path)
+                local partial_md5 = Fingerprint.partialMD5(path)
                 local found_ok, _, grimmory_id = self.repository:findBookByFile(path, partial_md5)
 
                 if not found_ok or not grimmory_id then

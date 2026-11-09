@@ -357,6 +357,14 @@ function Grimmory:applyOpenAtPercent()
     end)
 end
 
+--- Before a sync (and whenever KOReader saves its settings): write the page
+--- turns the recorder has not written yet
+function Grimmory:onFlushSettings()
+    if self.reading_recorder then
+        self.reading_recorder:flush()
+    end
+end
+
 function Grimmory:onPageUpdate(page)
     logger:dbg("Page Update", page)
 
