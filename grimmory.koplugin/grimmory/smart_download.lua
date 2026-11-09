@@ -36,15 +36,70 @@ function SmartDownload.isInProgress(books)
     return false
 end
 
+--- A volume's place in its series: its series number, else a number the
+--- file name starts with ("03 Title (2020).cbz"), else nil.
+---@param book LibraryBook
+---@return number | nil
+function SmartDownload.volumeNumber(book)
+    if type(book.series_number) == "number" then
+        return book.series_number
+    end
+    local name = book.primary_file_name or ""
+    local number = name:match("^%s*(%d+%.?%d*)")
+    return number and tonumber(number) or nil
+end
+
+--- The volumes in series order, whatever order the server listed them in:
+--- by number; volumes without one after them, in the server's order.
+---@param books LibraryBook[]
+---@return LibraryBook[]
+function SmartDownload.sortVolumes(books)
+    local entries = {}
+    for index, book in ipairs(books) do
+        table.insert(entries, { book = book, number = SmartDownload.volumeNumber(book), index = index })
+    end
+    table.sort(entries, function(a, b)
+        if a.number and b.number and a.number ~= b.number then
+            return a.number < b.number
+        end
+        if (a.number == nil) ~= (b.number == nil) then
+            return a.number ~= nil
+        end
+        return a.index < b.index
+    end)
+
+    local sorted = {}
+    for _, entry in ipairs(entries) do
+        table.insert(sorted, entry.book)
+    end
+    return sorted
+end
+
+--- How the volumes look to smart download, for the log: "1 READ, 2 READING, 3, ..."
+---@param books LibraryBook[]
+function SmartDownload.describe(books)
+    local parts = {}
+    for _, book in ipairs(books) do
+        local number = SmartDownload.volumeNumber(book)
+        local text = number and string.format("%g", number) or ("#" .. tostring(book.id))
+        if book.read_status and book.read_status ~= "UNREAD" then
+            text = text .. " " .. book.read_status
+        end
+        table.insert(parts, text)
+    end
+    return table.concat(parts, ", ")
+end
+
 --- The volumes to have on the device: the one being read (the latest, if
 --- several are) and the next unread ones after it.  Without one being read,
 --- the next unread ones after the last finished volume (from the start for
 --- a series not started yet).
----@param books LibraryBook[] The series' volumes, in series order
+---@param books LibraryBook[] The series' volumes (sorted here into series order)
 ---@param ahead_books number Unread book volumes to keep ahead
 ---@param ahead_comics number Unread comic volumes to keep ahead
 ---@return LibraryBook[]
 function SmartDownload.selectVolumes(books, ahead_books, ahead_comics)
+    books = SmartDownload.sortVolumes(books)
     local current_index = nil
     local last_finished_index = 0
 

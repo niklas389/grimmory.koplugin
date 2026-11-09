@@ -84,6 +84,10 @@ Grimmory version with the app API (`/api/v1/app`).
 - **Library Browser**: cover grid or list, clearing the browser's cache
 - **Network**: turning WiFi on when needed
 
+"Sync Everything Now" shows what it is doing step by step (uploading reading
+progress, checking the library, downloading books, …) with where it is,
+e.g. "Downloading books · 3 of 6 · Title", and a Stop button.
+
 ## Offline and failed syncs
 
 Reading progress, reading sessions and highlights stay on the device until
@@ -154,6 +158,10 @@ three ahead).  Both counts can be changed in the menu.
 
 It runs with every sync and after closing a book of a series.  Volumes it
 downloads stay on the device, also when they are not in a download source.
+Volumes are ordered by their series number in Grimmory (without one, by a
+number the file name starts with, e.g. `03 Title (2020).cbz`).  KOReader's
+log lists, for each series, the volumes as smart download sees them (number
+and reading status) and the ones it keeps ("Smart download: …").
 
 ## Updating
 

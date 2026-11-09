@@ -133,6 +133,7 @@ end
 ---@field shelves number[]
 ---@field metadata BookMetadata
 ---@field primary_file BookFile | nil
+---@field file_size_kb number | nil Size of the primary file (for download progress)
 
 ---@class GrimmoryAnnotation
 ---@field id number | nil
@@ -267,13 +268,15 @@ local function parse_book(book)
     }
 
     local primary_file = nil
+    local file_size_kb = nil
 
     local book_primary_file = book["primaryFile"]
 
-    if book_primary_file ~= nil then
+    if type(book_primary_file) == "table" then
         primary_file = {
             filename = from_json_string(book_primary_file["fileName"])
         }
+        file_size_kb = from_json_number(json_null_to_nil(book_primary_file["fileSizeKb"]))
     end
 
     return {
@@ -284,7 +287,8 @@ local function parse_book(book)
         server_progress = parse_server_progress(book, from_json_string(book["readStatus"])),
         shelves = shelves,
         metadata = metadata,
-        primary_file = primary_file
+        primary_file = primary_file,
+        file_size_kb = file_size_kb,
     }
 end
 
