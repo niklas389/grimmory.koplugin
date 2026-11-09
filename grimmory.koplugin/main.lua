@@ -324,7 +324,8 @@ function Grimmory:onCloseDocument()
     local close_sync = self.settings:getSyncOnCloseDocument()
     local smart = self.settings:getSmartDownloadMode() ~= "off"
 
-    if (close_sync or smart) and self.ui and self.ui.document and self.ui.document.file then
+    if (close_sync or smart) and self.ui and self.ui.document and self.ui.document.file
+        and GrimmoryAPI.isGrimmoryFormat(self.ui.document.file) then
         -- Only push this book's reading progress (the whole library is
         -- synchronized by the periodic / manual sync), and with smart
         -- download get the next volumes of its series.

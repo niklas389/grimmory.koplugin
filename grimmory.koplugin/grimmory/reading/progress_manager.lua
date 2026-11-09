@@ -157,7 +157,7 @@ function ReadingProgressManager:pushRemoteProgress(progress)
     local device_name = self.settings:getDeviceName()
     local device_id = self.settings:getDeviceId()
 
-    local ok, result = self.api:pushReadingProgress(
+    local ok, result, code = self.api:pushReadingProgress(
         koreader_auth_id,
         koreader_auth_secret,
         device_name,
@@ -168,12 +168,14 @@ function ReadingProgressManager:pushRemoteProgress(progress)
         progress.end_xpointer or progress.end_page
     )
 
-    if not ok then
+    if not ok and code ~= 404 then
+        -- Maybe the credentials changed: fetch them again next time (not for
+        -- a book Grimmory does not have)
         self.koreader_auth_id = nil
         self.koreader_auth_secret_md5 = nil
     end
 
-    return ok, result
+    return ok, result, code
 end
 
 ---@return string | nil source_name

@@ -8,6 +8,7 @@ local T = require("ffi/util").template
 local UIManager = require("ui/uimanager")
 local Event = require("ui/event")
 
+local GrimmoryAPI = require("grimmory/grimmory_api")
 local GrimmoryDocMetadata = require("grimmory/doc_metadata")
 local GrimmoryLogger = require("grimmory/logger")
 local Shared = require("grimmory/plugin/shared")
@@ -42,6 +43,11 @@ end
 
 function Grimmory:pullProgressForOpenBook()
     if self.ui == nil or self.ui.document == nil or self.ui.document.file == nil then
+        return
+    end
+
+    -- E.g. a .txt or an image: never a Grimmory book, no need to ask
+    if not GrimmoryAPI.isGrimmoryFormat(self.ui.document.file) then
         return
     end
 
