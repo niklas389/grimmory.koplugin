@@ -24,6 +24,9 @@ local logger = GrimmoryLogger:new()
 
 local Cooperative = {}
 
+-- LuaJIT (KOReader) has the global; newer Lua (e.g. the tests' CI) only table.unpack
+local unpack = unpack or table.unpack
+
 local function pack(...)
     return { n = select("#", ...), ... }
 end
