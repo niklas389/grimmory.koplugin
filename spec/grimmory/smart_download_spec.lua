@@ -1,4 +1,5 @@
 local assert = require 'luassert'
+local unpack = unpack or table.unpack -- luacheck: ignore
 local spy = require 'luassert.spy'
 
 package.path = "grimmory.koplugin/?.lua;" .. package.path
@@ -175,6 +176,31 @@ describe("Smart download", function()
             books[1].series_number = nil
             books[1].primary_file_name = "extra.epub"
             assert.are.same({ 2, 3, 1 }, ids(SmartDownload.sortVolumes(books)))
+        end)
+
+        it("does not count volumes only opened for a moment as being read", function()
+            -- Volumes 1, 2 and 10 marked as reading, without progress worth the name
+            local statuses = {}
+            for index = 1, 13 do
+                statuses[index] = (index == 1 or index == 2 or index == 10) and "READING" or "UNREAD"
+            end
+            local books = as_comics(series(unpack(statuses)))
+            for _, index in ipairs({ 1, 2, 10 }) do
+                books[index].read_progress = 0
+            end
+
+            assert.are.same({ 1, 2, 3 }, ids(SmartDownload.selectVolumes(books, 1, 3)))
+            assert.is_false(SmartDownload.isInProgress(books))
+        end)
+
+        it("counts a volume being read from a little progress on, or with unknown progress", function()
+            local books = series("READ", "READING", "UNREAD")
+            books[2].read_progress = 1.5
+            assert.are.same({ 2, 3 }, ids(SmartDownload.selectVolumes(books, 1, 3)))
+
+            books[2].read_progress = nil
+            assert.are.same({ 2, 3 }, ids(SmartDownload.selectVolumes(books, 1, 3)))
+            assert.is_true(SmartDownload.isInProgress(books))
         end)
 
         it("skips volumes without a file", function()
