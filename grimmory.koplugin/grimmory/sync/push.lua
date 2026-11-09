@@ -41,7 +41,15 @@ function GrimmorySynchronize:pushBookProgress(book_id, callback)
     end
 
     logger:info("Synchronizing reading progress for:", book_id, ";", last_synced_at, "->", progress.end_time)
-    local ok = self.reading_progress_manager:pushRemoteProgress(progress)
+    local ok, _, code = self.reading_progress_manager:pushRemoteProgress(progress)
+
+    if not ok and code == 404 then
+        -- Grimmory does not have this file (e.g. a book only on the device):
+        -- nothing to send, and no failure to retry with every sync
+        logger:info("Book not in Grimmory, reading progress not sent:", progress.book_path)
+        self.repository:updateBookSyncTimestamp(book_id, "progress", progress.end_time)
+        return
+    end
 
     if ok then
         callback({
@@ -126,7 +134,8 @@ function GrimmorySynchronize:pushBookSessions(book_id, callback)
                 session.start_progress,
                 session.end_progress,
                 tostring(session.start_page),
-                tostring(session.end_page)
+                tostring(session.end_page),
+                self.api.bookTypeOf(session.book_path)
             )
 
             if ok then
@@ -139,11 +148,13 @@ function GrimmorySynchronize:pushBookSessions(book_id, callback)
 
                 self.repository:updateBookSyncTimestamp(book_id, "sessions", session.end_time)
             else
-                logger:err("Session failed recording with error for book: ", book_id, " - ", body)
+                logger:err("Session failed recording with error for book: ", book_id, session.book_path, " - ", body)
                 callback({
                     state = "session-error",
                     bookPath = session.book_path,
                     since = session.end_time,
+                    -- Why, as the server says (shown after the sync)
+                    message = type(body) == "string" and body or nil,
                 })
 
                 -- If an error happens for this session we bail early so
@@ -397,6 +408,12 @@ function GrimmorySynchronize:pushPendingBooks(pending, open_book_path, callback)
 end
 
 function GrimmorySynchronize:pushBookProgressAndSessions(book_path, callback)
+    if not self.api.isGrimmoryFormat(book_path) then
+        -- E.g. a .txt or an image opened in KOReader: never a Grimmory book
+        logger:dbg("Not a Grimmory book format, nothing to send:", book_path)
+        return
+    end
+
     if not self:checkForHealthyServer() then
         error("Cannot connect to valid server")
     end
@@ -407,6 +424,8 @@ function GrimmorySynchronize:pushBookProgressAndSessions(book_path, callback)
         error("Could not track book")
     end
 
+    -- Progress goes by the file's fingerprint: Grimmory finds its book also
+    -- when the book is not linked here
     logger:info("Pushing reading progress:", book_path)
     self:pushBookProgress(book_id, callback)
 

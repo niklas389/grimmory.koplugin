@@ -134,6 +134,7 @@ end
 ---@field metadata BookMetadata
 ---@field primary_file BookFile | nil
 ---@field file_size_kb number | nil Size of the primary file (for download progress)
+---@field read_status string | nil Grimmory's read status (READ: finished)
 
 ---@class GrimmoryAnnotation
 ---@field id number | nil
@@ -294,6 +295,7 @@ local function parse_book(book)
         metadata = metadata,
         primary_file = primary_file,
         file_size_kb = file_size_kb,
+        read_status = from_json_string(json_null_to_nil(book["readStatus"])),
     }
 end
 
@@ -766,6 +768,34 @@ end
 ---@param end_progress number
 ---@param start_location string
 ---@param end_location string
+-- Grimmory's book types, by file extension (what was read)
+local BOOK_TYPES = {
+    epub = "EPUB", kepub = "EPUB", pdf = "PDF", fb2 = "FB2", mobi = "MOBI", azw3 = "AZW3", azw = "AZW3",
+    cbz = "CBX", cbr = "CBX", cb7 = "CBX", cbt = "CBX",
+}
+
+local function extensionOf(path)
+    path = tostring(path or ""):lower()
+    if path:match("%.fb2%.zip$") then
+        return "fb2"
+    end
+    return path:match("%.([%w]+)$")
+end
+
+--- Grimmory's book type of a file ("EPUB" when unknown)
+function GrimmoryAPI.bookTypeOf(path)
+    local extension = extensionOf(path)
+    return extension and BOOK_TYPES[extension] or "EPUB"
+end
+
+--- Whether the file can be a Grimmory book at all (its formats: EPUB, PDF,
+--- comic archives, FB2, MOBI, AZW3).  Others (e.g. a .txt or an image
+--- opened in KOReader) are never sent to or searched on the server.
+function GrimmoryAPI.isGrimmoryFormat(path)
+    local extension = extensionOf(path)
+    return extension ~= nil and BOOK_TYPES[extension] ~= nil
+end
+
 function GrimmoryAPI:recordSession(
     book_id,
     start_time,
@@ -773,12 +803,13 @@ function GrimmoryAPI:recordSession(
     start_progress,
     end_progress,
     start_location,
-    end_location
+    end_location,
+    book_type
 )
     local duration_seconds = end_time - start_time
     local progress_delta = math.max(0, end_progress - start_progress)
 
-    local book_type = "EPUB"
+    book_type = book_type or "EPUB"
 
     local request = {
         bookId = book_id,
@@ -896,19 +927,28 @@ function GrimmoryAPI:pushReadingProgress(
         ["x-auth-key"] = auth_key,
     }
 
-    local ok, _, body = self:request(
+    local ok, code, body = self:request(
         "PUT",
         "/api/koreader/syncs/progress",
         request,
         headers
     )
 
-    if not ok then
-        logger:err("Unable to push progress for book:", book_md5, "-", body)
-        return false, body
+    if not ok and type(body) == "string" and body:lower():find("not found for hash", 1, true) then
+        code = 404
     end
 
-    return ok, nil
+    if not ok then
+        if code == 404 then
+            -- "Book not found for hash": not a Grimmory book
+            logger:info("Book not in Grimmory, progress not pushed:", book_md5, "-", body)
+        else
+            logger:err("Unable to push progress for book:", book_md5, "-", body)
+        end
+        return false, body, code
+    end
+
+    return ok, nil, code
 end
 
 ---@param username string

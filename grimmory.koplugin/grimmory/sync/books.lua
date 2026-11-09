@@ -248,6 +248,13 @@ function GrimmorySynchronize:pullBook(book, on_download_progress, known_download
         if is_downloaded then
             self:applyServerProgress(download_path, book.server_progress)
         end
+
+        -- Finished in Grimmory: finished in KOReader too (not undone the
+        -- other way: a book finished on the device stays so)
+        if book.read_status == "READ" and self.settings:getSyncReadingProgress()
+            and self.doc_metadata:markFinished(download_path) then
+            logger:info("Marked as finished, as in Grimmory:", download_path)
+        end
     end
 
     return download_path, is_downloaded
@@ -307,6 +314,7 @@ function GrimmorySynchronize:downloadLibraryBook(grimmory_id, on_progress)
         primary_file = { filename = detail.primary_file_name },
         server_progress = detail.server_progress,
         file_size_kb = detail.file_size_kb,
+        read_status = detail.read_status,
     }
 
     local book_path = self:pullBook(book, on_progress)

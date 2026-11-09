@@ -18,6 +18,7 @@ local ReadCollection = require("readcollection")
 local ProgressSheet = require("grimmory/ui/progress_sheet")
 local Sheet = require("grimmory/ui/sheet")
 local SyncProgress = require("grimmory/ui/sync_progress")
+local GrimmoryDocMetadata = require("grimmory/doc_metadata")
 local GrimmoryLogger = require("grimmory/logger")
 local Shared = require("grimmory/plugin/shared")
 
@@ -327,6 +328,7 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
 
         local session_count = 0
         local session_error_count = 0
+        local session_error_reason = nil
         local book_download_count = 0
         local book_refresh_count = 0
         local book_error_count = 0
@@ -357,6 +359,12 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
             function(progress)
                 if type(progress) ~= "table" or type(progress.state) ~= "string" then
                     return
+                end
+
+                if type(progress.book_path) == "string" then
+                    -- Status and progress may have changed (e.g. finished
+                    -- in Grimmory): the file browser reads them again
+                    GrimmoryDocMetadata.forgetCachedInfo(progress.book_path)
                 end
 
                 if progress_sheet then
@@ -402,6 +410,7 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
                     session_count = session_count + 1
                 elseif progress.state == "session-error" then
                     session_error_count = session_error_count + 1
+                    session_error_reason = session_error_reason or progress.message
                 elseif progress.state == "book-downloaded" then
                     book_download_count = book_download_count + 1
 
@@ -577,7 +586,11 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
             end
 
             if session_error_count > 0 then
-                table.insert(message, T(_("%1 session(s) failed"), session_error_count))
+                if session_error_reason and session_error_reason ~= "" then
+                    table.insert(message, T(_("%1 session(s) failed: %2"), session_error_count, session_error_reason))
+                else
+                    table.insert(message, T(_("%1 session(s) failed"), session_error_count))
+                end
             end
 
             if book_download_count > 0 then

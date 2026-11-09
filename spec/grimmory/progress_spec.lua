@@ -54,6 +54,24 @@ describe("Reading progress from the server", function()
         end)
     end)
 
+    describe("bookTypeOf", function()
+        it("names Grimmory's book type by the file extension", function()
+            assert.are.equal("CBX", GrimmoryAPI.bookTypeOf("/books/03 Manga (2020).cbz"))
+            assert.are.equal("PDF", GrimmoryAPI.bookTypeOf("/books/Paper.PDF"))
+            assert.are.equal("EPUB", GrimmoryAPI.bookTypeOf("/books/Novel.epub"))
+            assert.are.equal("EPUB", GrimmoryAPI.bookTypeOf(nil))
+            assert.are.equal("FB2", GrimmoryAPI.bookTypeOf("/books/Tale.fb2.zip"))
+        end)
+
+        it("knows which files can be Grimmory books", function()
+            assert.is_true(GrimmoryAPI.isGrimmoryFormat("/books/03 Manga (2020).CBZ"))
+            assert.is_true(GrimmoryAPI.isGrimmoryFormat("/books/Novel.kepub.epub"))
+            assert.is_false(GrimmoryAPI.isGrimmoryFormat("/ebrmain/license/about_firmware.txt"))
+            assert.is_false(GrimmoryAPI.isGrimmoryFormat("/plugins/simpleui.koplugin/icons/group.svg"))
+            assert.is_false(GrimmoryAPI.isGrimmoryFormat(nil))
+        end)
+    end)
+
     describe("parseServerProgress", function()
         local parse = GrimmoryAPI.parseServerProgress
 

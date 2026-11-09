@@ -551,9 +551,11 @@ function DialogManager:showPluginUpdateCheck()
     self.with_network(
         function(release)
             local check_error = select(2, self.updater:fetchLatestVersion())
-            release()
             pcall(close_message)
-            self:showPluginUpdateDialog(check_error)
+            -- The connection stays while the dialog is open: "Update" uses
+            -- it.  Turning WiFi off and on again right away fails on some
+            -- devices (PocketBook: the system still switches WiFi off).
+            self:showPluginUpdateDialog(check_error, release)
         end,
         function(reason)
             pcall(close_message)
@@ -563,7 +565,9 @@ function DialogManager:showPluginUpdateCheck()
 end
 
 ---@param check_error string | nil Why the check failed, if it did
-function DialogManager:showPluginUpdateDialog(check_error)
+---@param release function | nil Ends the connection of the check (when the dialog closes,
+---  unless "Update" took it over)
+function DialogManager:showPluginUpdateDialog(check_error, release)
     local latest_version = self.updater:getLatestReleaseVersion()
     local is_update_available = self.updater:isUpdateAvailable()
 
@@ -578,6 +582,7 @@ function DialogManager:showPluginUpdateDialog(check_error)
         message = _("Update available for Grimmory.koplugin.")
     end
 
+    local handed_over = false
     local sections = {}
     if is_update_available then
         table.insert(sections, Sheet.list({
@@ -585,7 +590,8 @@ function DialogManager:showPluginUpdateDialog(check_error)
                 text = T(_("Update to %1"), latest_version),
                 sui_icon = "update",
                 callback = function()
-                    self:showPluginUpdater()
+                    handed_over = true
+                    self:showPluginUpdater(release)
                 end,
             },
         }))
@@ -609,11 +615,29 @@ function DialogManager:showPluginUpdateDialog(check_error)
         message = message,
         auto_close = true,
         sections = sections,
+        on_close = release and function()
+            -- After the tapped button's callback (it runs right after the
+            -- sheet closes): "Update" or "Check Again" need the connection
+            UIManager:nextTick(function()
+                if not handed_over then
+                    release()
+                end
+            end)
+        end or nil,
     })
 end
 
-function DialogManager:showPluginUpdater()
-    self.with_network(
+---@param held_release function | nil The connection of the update check, if still held
+function DialogManager:showPluginUpdater(held_release)
+    local function with_connection(on_ready, on_failed)
+        if held_release then
+            on_ready(held_release)
+        else
+            self.with_network(on_ready, on_failed)
+        end
+    end
+
+    with_connection(
         function(release)
             local dialog = ProgressbarDialog:new({
                 title = _("Updating Grimmory Plugin"),
