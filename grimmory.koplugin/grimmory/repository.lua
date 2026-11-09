@@ -3,6 +3,7 @@ local DataStorage = require("datastorage")
 local ffiUtil = require("ffi/util")
 local util = require("util")
 
+local Fingerprint = require("grimmory/fingerprint")
 local GrimmoryLogger = require("grimmory/logger")
 local PluginMetadata = require("grimmory/plugin_metadata")
 
@@ -179,7 +180,7 @@ function GrimmoryLocalRepository:upsertBook(book_path, grimmory_id)
         return false, nil, nil
     end
 
-    local partial_md5 = util.partialMD5(absolute_book_path)
+    local partial_md5 = Fingerprint.partialMD5(absolute_book_path)
 
     if partial_md5 == nil then
         logger:err("Cannot upsert book, unable to hash:", absolute_book_path)
@@ -466,9 +467,30 @@ end
 ---@param page_count number
 ---@param xpointer string | nil
 function GrimmoryLocalRepository:insertBookEvent(session_id, event_type, current_page, page_count, xpointer)
+    self:insertBookEvents({
+        {
+            session_id = session_id,
+            created_at = os.time(),
+            event_type = event_type,
+            current_page = current_page,
+            page_count = page_count,
+            xpointer = xpointer,
+        },
+    })
+end
+
+--- Several events at once: one connection and one transaction (one write
+--- to the flash memory instead of one per event).
+---@param events table[] { session_id, created_at, event_type, current_page, page_count, xpointer }
+function GrimmoryLocalRepository:insertBookEvents(events)
+    if #events == 0 then
+        return
+    end
+
     local ok, result = with_database(
         self.database_path,
         function(conn)
+            conn:exec("BEGIN")
             local stmt = conn:prepare([[
                 INSERT INTO book_event
                     (
@@ -482,24 +504,33 @@ function GrimmoryLocalRepository:insertBookEvent(session_id, event_type, current
                 VALUES (?, ?, ?, ?, ?, ?)
             ]])
 
-            stmt:bind(
-                session_id,
-                os.time(),
-                event_type,
-                current_page,
-                page_count,
-                xpointer
-            )
-
-            stmt:step()
-
+            local inserted, insert_error = pcall(function()
+                for _, event in ipairs(events) do
+                    stmt:reset()
+                    stmt:bind(
+                        event.session_id,
+                        event.created_at,
+                        event.event_type,
+                        event.current_page,
+                        event.page_count,
+                        event.xpointer
+                    )
+                    stmt:step()
+                end
+            end)
             stmt:close()
+
+            if not inserted then
+                conn:exec("ROLLBACK")
+                error(insert_error)
+            end
+            conn:exec("COMMIT")
         end,
         "rw"
     )
 
     if not ok then
-        logger:err("Failed to create session event:", result)
+        logger:err("Failed to create session events:", result)
     end
 end
 

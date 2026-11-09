@@ -209,4 +209,61 @@ describe("Download sources", function()
             assert.has_error(function() sync:loadMagicShelfBookIds() end)
         end)
     end)
+
+    describe("pullBooks", function()
+        it("does not bring back a kept book deleted from the device, and forgets it", function()
+            local util = require("util")
+            util.makePath = function() return true end
+            util.fileExists = function(path) return path == "/books/kept_here.epub" end
+            util.findFiles = function() end
+            require("readcollection").write = function() end
+
+            local sync = GrimmorySynchronize:new({
+                settings = new_settings({
+                    download_everything = false,
+                    sync_download_directory = "/books",
+                    sync_target_series = { { name = "Dune" } },
+                    browser_kept_books = { ["12"] = true, ["13"] = true },
+                }),
+            })
+            local books = {
+                book({ id = 12, primary_file = { filename = "kept_gone.epub" } }),
+                book({ id = 13, primary_file = { filename = "kept_here.epub" } }),
+                book({ id = 14, series_name = "Dune", primary_file = { filename = "dune.epub" } }),
+            }
+            sync.api = {
+                getBooks = function()
+                    local index = 0
+                    return function()
+                        index = index + 1
+                        if books[index] then
+                            return books[index], index, #books
+                        end
+                    end
+                end,
+            }
+            sync.loadMagicShelfBookIds = function() end
+            sync.applyBookInfo = function() end
+            sync.getBookDownloadPath = function(_, b) return "/books/" .. b.primary_file.filename end
+            local pulled = {}
+            sync.pullBook = function(_, b)
+                table.insert(pulled, b.id)
+                return "/books/" .. b.primary_file.filename, b.id == 14
+            end
+            local removed = {}
+
+            sync:pullBooks(function(event)
+                if event.state == "kept-book-removed" then
+                    table.insert(removed, event.book_id)
+                end
+            end)
+
+            -- Kept and here: updated; in a download source: downloaded;
+            -- kept but deleted: neither, and no longer kept
+            assert.are.same({ 13, 14 }, pulled)
+            assert.are.same({ 12 }, removed)
+            assert.is_false(sync.settings:isKeptBook(12))
+            assert.is_true(sync.settings:isKeptBook(13))
+        end)
+    end)
 end)

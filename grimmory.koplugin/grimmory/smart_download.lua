@@ -15,19 +15,20 @@ local SKIPPED_STATUS = { READ = true, WONT_READ = true, ABANDONED = true }
 local READING_STATUS = { READING = true, RE_READING = true }
 
 -- A volume marked as being read counts only from this much progress on
--- (percent): opening a volume for a moment marks it "reading" on the server
--- (e.g. a peek in Grimmory's reader, or a sync of a book opened briefly)
+-- (percent): opening a volume for a moment marks it "reading" on the
+-- server (e.g. a peek in Grimmory's reader, or a sync of a book opened
+-- briefly), and resetting its progress in Grimmory keeps that status.
 SmartDownload.MIN_READING_PERCENT = 1
 
 --- Whether the volume is really being read: marked so, and read a little.
---- Unknown progress counts as being read.
+--- Without progress (0 % arrives as none) it is not: a status left over.
 ---@param book LibraryBook
 function SmartDownload.isReading(book)
     if not READING_STATUS[book.read_status or ""] then
         return false
     end
     local progress = tonumber(book.read_progress)
-    return progress == nil or progress >= SmartDownload.MIN_READING_PERCENT
+    return progress ~= nil and progress >= SmartDownload.MIN_READING_PERCENT
 end
 
 ---@param book LibraryBook
@@ -100,8 +101,9 @@ function SmartDownload.describe(books)
         local text = number and string.format("%g", number) or ("#" .. tostring(book.id))
         if book.read_status and book.read_status ~= "UNREAD" then
             text = text .. " " .. book.read_status
-            if READING_STATUS[book.read_status] and book.read_progress then
-                text = text .. string.format(" %g%%", book.read_progress)
+            if READING_STATUS[book.read_status] then
+                text = text .. (book.read_progress and string.format(" %g%%", book.read_progress)
+                    or " (no progress)")
             end
         end
         table.insert(parts, text)
