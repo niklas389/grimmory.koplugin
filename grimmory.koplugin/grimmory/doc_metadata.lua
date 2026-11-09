@@ -318,6 +318,40 @@ end
 ---@param percent number | nil
 ---@param xpointer string | nil
 ---@param page number | nil
+--- Forget what KOReader's file browser cached about a book (its status,
+--- progress): the sync changed it in another process.
+function DocMetadata.forgetCachedInfo(path)
+    if not path then
+        return
+    end
+    local ok, BookList = pcall(require, "ui/widget/booklist")
+    if ok and type(BookList) == "table" and type(BookList.resetBookInfoCache) == "function" then
+        pcall(BookList.resetBookInfoCache, path)
+    end
+end
+
+--- Mark a book as finished in KOReader (its status, as "Mark as finished"
+--- does), unless it already is.  Not the book open in the reader: it saves
+--- its own status when closed.
+---@return boolean changed
+function DocMetadata:markFinished(path)
+    if self.ui and self.ui.document and self.ui.document.file == path then
+        return false
+    end
+
+    local settings = DocSettings:open(path)
+    local summary = settings:readSetting("summary") or {}
+    if summary.status == "complete" then
+        return false
+    end
+
+    summary.status = "complete"
+    summary.modified = os.date("%Y-%m-%d", os.time())
+    settings:saveSetting("summary", summary)
+    settings:flush()
+    return true
+end
+
 function DocMetadata:setProgress(path, percent, xpointer, page)
     local settings = self:getDocSettings(path)
 

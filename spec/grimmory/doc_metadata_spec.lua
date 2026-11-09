@@ -201,4 +201,36 @@ describe("GrimmoryDocMetadata", function()
             assert.are.equal("ABC123", actual)
         end)
     end)
+
+    describe("markFinished", function()
+        local saved
+
+        before_each(function()
+            saved = {}
+            fake_doc_settings.saveSetting = function(_, key, value) saved[key] = value end
+            fake_doc_settings.flush = function() end
+        end)
+
+        it("marks a book finished like KOReader's 'Mark as finished'", function()
+            fake_doc_settings.readSetting.on_call_with(match._, "summary").returns({ status = "reading" })
+
+            assert.is_true(GrimmoryDocMetadata:new({}):markFinished("/books/a.epub"))
+            assert.are.equal("complete", saved.summary.status)
+            assert.is_string(saved.summary.modified)
+        end)
+
+        it("leaves a finished book alone", function()
+            fake_doc_settings.readSetting.on_call_with(match._, "summary").returns({ status = "complete" })
+
+            assert.is_false(GrimmoryDocMetadata:new({}):markFinished("/books/a.epub"))
+            assert.is_nil(saved.summary)
+        end)
+
+        it("does not touch the book open in the reader", function()
+            local metadata = GrimmoryDocMetadata:new({ ui = { document = { file = "/books/a.epub" } } })
+
+            assert.is_false(metadata:markFinished("/books/a.epub"))
+            assert.is_nil(saved.summary)
+        end)
+    end)
 end)

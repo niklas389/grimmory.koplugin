@@ -18,6 +18,7 @@ local ReadCollection = require("readcollection")
 local ProgressSheet = require("grimmory/ui/progress_sheet")
 local Sheet = require("grimmory/ui/sheet")
 local SyncProgress = require("grimmory/ui/sync_progress")
+local GrimmoryDocMetadata = require("grimmory/doc_metadata")
 local GrimmoryLogger = require("grimmory/logger")
 local Shared = require("grimmory/plugin/shared")
 
@@ -358,6 +359,12 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
             function(progress)
                 if type(progress) ~= "table" or type(progress.state) ~= "string" then
                     return
+                end
+
+                if type(progress.book_path) == "string" then
+                    -- Status and progress may have changed (e.g. finished
+                    -- in Grimmory): the file browser reads them again
+                    GrimmoryDocMetadata.forgetCachedInfo(progress.book_path)
                 end
 
                 if progress_sheet then

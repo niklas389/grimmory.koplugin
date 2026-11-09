@@ -17,6 +17,7 @@ local LibraryData = require("grimmory/ui/library/data")
 local Sheet = require("grimmory/ui/sheet")
 local Style = require("grimmory/ui/style")
 local Widgets = require("grimmory/ui/library/widgets")
+local GrimmoryDocMetadata = require("grimmory/doc_metadata")
 local GrimmoryLogger = require("grimmory/logger")
 
 local logger = GrimmoryLogger:new()
@@ -234,6 +235,7 @@ function LibraryBrowser:downloadSelected(screen)
                 downloaded = downloaded + 1
                 -- Keep them on the device even if they are in no download source
                 self.settings:setKeptBook(book.id, true)
+                GrimmoryDocMetadata.forgetCachedInfo(result.path)
                 local paths = self.local_paths[tostring(book.id)] or {}
                 table.insert(paths, 1, result.path)
                 self.local_paths[tostring(book.id)] = paths

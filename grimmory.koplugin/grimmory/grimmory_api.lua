@@ -134,6 +134,7 @@ end
 ---@field metadata BookMetadata
 ---@field primary_file BookFile | nil
 ---@field file_size_kb number | nil Size of the primary file (for download progress)
+---@field read_status string | nil Grimmory's read status (READ: finished)
 
 ---@class GrimmoryAnnotation
 ---@field id number | nil
@@ -294,6 +295,7 @@ local function parse_book(book)
         metadata = metadata,
         primary_file = primary_file,
         file_size_kb = file_size_kb,
+        read_status = from_json_string(json_null_to_nil(book["readStatus"])),
     }
 end
 

@@ -145,6 +145,7 @@ function GrimmorySynchronize:smartDownloadVolume(volume, callback)
         primary_file = { filename = volume.primary_file_name },
         file_size_kb = volume.file_size_kb,
         server_progress = volume.read_progress and { percent = volume.read_progress } or nil,
+        read_status = volume.read_status,
     }
 
     local ok, book_path = pcall(self.pullBook, self, book, downloadProgress(callback))
