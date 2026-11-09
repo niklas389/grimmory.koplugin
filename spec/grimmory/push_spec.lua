@@ -71,3 +71,65 @@ describe("Pushing reading progress", function()
         assert.spy(sync.repository.upsertBook).was_not.called()
     end)
 end)
+
+describe("Pushing reading sessions", function()
+    local function session_synchronizer(other_id)
+        local linked = { [1] = 106 }
+        local recorded = {}
+        local events = {}
+        local sync = GrimmorySynchronize:new({
+            settings = {
+                getSyncReadingSessions = function() return true end,
+                getSessionThresholdPages = function() return 0 end,
+                getSessionThresholdSeconds = function() return 0 end,
+            },
+            repository = {
+                getPendingSessions = function(_, book_id)
+                    return {
+                        {
+                            grimmory_id = linked[book_id], book_path = "/books/05 Manga.cbz",
+                            start_time = 100, end_time = 400, start_page = 1, end_page = 20,
+                            start_progress = 0, end_progress = 10,
+                        },
+                    }
+                end,
+                findOtherGrimmoryIdForPath = function() return other_id end,
+                setGrimmoryId = function(_, book_id, grimmory_id) linked[book_id] = grimmory_id end,
+                updateBookSyncTimestamp = spy.new(function() return true end),
+            },
+            api = {
+                bookTypeOf = function() return "CBX" end,
+                recordSession = function(_, grimmory_id)
+                    if grimmory_id == 106 then
+                        return false, "Book not found with ID: 106", 404
+                    end
+                    table.insert(recorded, grimmory_id)
+                    return true, nil, 202
+                end,
+            },
+        })
+        return sync, linked, recorded, events, function(event) table.insert(events, event.state) end
+    end
+
+    it("records them for the copy of the same file linked to the book's new Grimmory ID", function()
+        local sync, linked, recorded, events, callback = session_synchronizer(207)
+
+        sync:pushBookSessions(1, callback)
+
+        assert.are.equal(207, linked[1])
+        assert.are.same({ 207 }, recorded)
+        assert.are.same({ "session-recorded" }, events)
+    end)
+
+    it("drops them, and the link, when the book is no longer in Grimmory", function()
+        local sync, linked, recorded, events, callback = session_synchronizer(nil)
+
+        sync:pushBookSessions(1, callback)
+
+        assert.is_nil(linked[1])
+        assert.are.same({}, recorded)
+        -- Not a failure, and not sent again
+        assert.are.same({ "sessions-dropped" }, events)
+        assert.spy(sync.repository.updateBookSyncTimestamp).was.called_with(sync.repository, 1, "sessions", 400)
+    end)
+end)
