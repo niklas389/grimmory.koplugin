@@ -28,6 +28,8 @@ function Shared.describeSyncError(result)
         return _("WiFi didn't turn on")
     elseif result == GrimmoryExecutor.ERROR_NO_CONNECTION then
         return _("No network connection")
+    elseif result == GrimmoryExecutor.ERROR_WIFI_PAUSED then
+        return _("WiFi is not turned on by itself after it failed to connect")
     elseif type(result) ~= "string" then
         return nil
     elseif result:find("Cannot connect to valid server", 1, true) then
@@ -38,5 +40,14 @@ function Shared.describeSyncError(result)
 
     return nil
 end
+
+--- Whether a failure is not worth a message: an automatic action that did
+--- not try, as WiFi failed to connect before (that was said once already)
+function Shared.isQuietFailure(result)
+    return result == GrimmoryExecutor.ERROR_WIFI_PAUSED
+end
+
+--- Said once, when an automatic action could not turn WiFi on: it pauses
+Shared.WIFI_PAUSED_NOTE = _("Not turned on again by itself until WiFi works or you sync or browse by hand.")
 
 return Shared

@@ -212,7 +212,7 @@ All under **Tools** -> **Grimmory**.  Defaults in brackets.
 
 | Setting | Default | What it does |
 |---|---|---|
-| Turn On WiFi When Needed | off | Turn WiFi on for syncs, downloads and the library browser, and off again afterwards.  When off, KOReader asks before going online. |
+| Turn On WiFi When Needed | off | Turn WiFi on for syncs, downloads and the library browser, and off again afterwards.  When off, KOReader asks before going online.  If WiFi does not connect (e.g. in flight mode), the plugin does not turn it on by itself again (opening or closing a book, waking up, periodic sync) until WiFi works again or you sync or browse by hand. |
 | Check HTTPS Certificates | on | See [HTTPS](#https). |
 | Connect WiFi in Background (experimental, PocketBook only) | off | Turn WiFi on with PocketBook's system network tool, so reading is not interrupted while connecting; falls back to the regular connection after 30 seconds. |
 

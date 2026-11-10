@@ -70,6 +70,8 @@ end
 -- Why connecting failed, returned as the result of a failed run.
 local ERROR_WIFI_FAILED = "wifi-failed"
 local ERROR_NO_CONNECTION = "no-connection"
+-- Not tried: turning WiFi on by itself is paused after a failed attempt
+local ERROR_WIFI_PAUSED = "wifi-paused"
 
 ---@class GrimmoryExecutor
 ---@field private running_subprocesses any[]
@@ -77,6 +79,7 @@ local ERROR_NO_CONNECTION = "no-connection"
 local GrimmoryExecutor = {
     ERROR_WIFI_FAILED = ERROR_WIFI_FAILED,
     ERROR_NO_CONNECTION = ERROR_NO_CONNECTION,
+    ERROR_WIFI_PAUSED = ERROR_WIFI_PAUSED,
 }
 
 function GrimmoryExecutor:new(o)
@@ -258,11 +261,85 @@ local function log_connection_stages()
     UIManager:scheduleIn(0.25, check)
 end
 
+-- After a failed attempt (e.g. in flight mode, or the WiFi dialog
+-- cancelled), the plugin does not turn WiFi on by itself (opening or closing
+-- a book, waking up, periodic sync) until WiFi works again (connected by
+-- anyone: NetworkConnected) or something is started by hand, which always
+-- tries.  Otherwise each of these shows PocketBook's WiFi dialog again.
+local auto_wifi_paused = false
+
+-- While an attempt runs, and this long after it, a "Resume" is probably our
+-- own: on PocketBook, KOReader gets Suspend / Resume when a system window
+-- such as the WiFi dialog opens and closes.
+local OWN_RESUME_SECONDS = 15
+-- An attempt that ended in an error leaves its start: it counts this long
+local ATTEMPT_MAX_SECONDS = 120
+local wifi_attempt_started_at = nil
+local wifi_attempt_ended_at = nil
+
+--- Whether turning WiFi on by itself is paused (after a failed attempt)
+function GrimmoryExecutor.isAutoWifiPaused()
+    return auto_wifi_paused
+end
+
+--- WiFi works again (or was turned on by hand): automatic actions may turn
+--- it on again.
+function GrimmoryExecutor.resumeAutoWifi()
+    auto_wifi_paused = false
+end
+
+--- Whether a Suspend / Resume now probably comes from the plugin's own
+--- connection attempt (PocketBook's WiFi dialog), not from the device.
+function GrimmoryExecutor.isOwnConnectionEvent()
+    -- Elsewhere, Suspend / Resume are real
+    if not Device:isPocketBook() then
+        return false
+    end
+    local now = os.time()
+    if wifi_attempt_started_at ~= nil and now - wifi_attempt_started_at <= ATTEMPT_MAX_SECONDS then
+        return true
+    end
+    return wifi_attempt_ended_at ~= nil and now - wifi_attempt_ended_at <= OWN_RESUME_SECONDS
+end
+
 --- Connect to WiFi, turning it on if needed.  Must run inside a coroutine.
 ---@param use_pocketbook_netagent boolean
+---@param automatic boolean | nil Not started by hand: one attempt only, and none while paused
 ---@return boolean connected
----@return string|nil error ERROR_WIFI_FAILED or ERROR_NO_CONNECTION
-local function connect_wifi(use_pocketbook_netagent)
+---@return string|nil error ERROR_WIFI_FAILED, ERROR_NO_CONNECTION or ERROR_WIFI_PAUSED
+local connect_wifi_attempt
+
+local function connect_wifi(use_pocketbook_netagent, automatic)
+    if is_wifi_connected() then
+        logger:dbg("WiFi is already Active")
+        auto_wifi_paused = false
+        return true
+    end
+
+    if automatic and auto_wifi_paused and Device:hasWifiToggle() then
+        logger:info("Not turning WiFi on: the last attempt failed (paused until WiFi works again)")
+        return false, ERROR_WIFI_PAUSED
+    end
+
+    -- (Not in a pcall: the attempt waits by yielding its coroutine)
+    wifi_attempt_started_at = os.time()
+    local connected, connect_error = connect_wifi_attempt(use_pocketbook_netagent, automatic)
+    wifi_attempt_started_at = nil
+    wifi_attempt_ended_at = os.time()
+
+    if connected then
+        auto_wifi_paused = false
+    elseif Device:hasWifiToggle() then
+        if not auto_wifi_paused then
+            logger:info("WiFi did not connect: not turning it on by itself until it works again")
+        end
+        auto_wifi_paused = true
+    end
+
+    return connected, connect_error
+end
+
+connect_wifi_attempt = function(use_pocketbook_netagent, automatic)
     if is_wifi_connected() then
         logger:dbg("WiFi is already Active")
         return true
@@ -331,7 +408,8 @@ local function connect_wifi(use_pocketbook_netagent)
     -- it is worth a second try.  Elsewhere the result is only known later.
     -- (Unless a patch made it asynchronous, see turn_on_wifi_async below.)
     local pocketbook_sync_connect = Device:isPocketBook() and not NetworkManager.turn_on_wifi_async
-    local attempts = pocketbook_sync_connect and 2 or 1
+    -- Automatic actions try once: each attempt may show PocketBook's WiFi dialog
+    local attempts = (pocketbook_sync_connect and not automatic) and 2 or 1
 
     for attempt = 1, attempts do
         -- Turning WiFi on below blocks the UI (scanning, PocketBook's
@@ -489,9 +567,10 @@ end
 
 ---@param callback function(run_in_background: GrimmoryBackgroundStart)
 ---@param with_wifi bool
+---@param automatic boolean | nil Not started by hand (see connect_wifi)
 ---@return boolean ok
 ---@return any result
-function GrimmoryExecutor:background(callback, with_wifi)
+function GrimmoryExecutor:background(callback, with_wifi, automatic)
     return wrap_coroutine(function()
         local subprocess_pid = nil
         local was_terminated = false
@@ -531,7 +610,7 @@ function GrimmoryExecutor:background(callback, with_wifi)
                 local use_pocketbook_netagent = self.settings ~= nil and
                     self.settings:getSyncPocketBookBackgroundWifi()
 
-                local connected, connect_error = connect_wifi(use_pocketbook_netagent)
+                local connected, connect_error = connect_wifi(use_pocketbook_netagent, automatic)
 
                 if not connected then
                     logger:err("No connectivity after trying to enable WiFi:", connect_error)
