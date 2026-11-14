@@ -252,6 +252,13 @@ end
 function Grimmory:onSuspend()
     logger:dbg("Device is suspending")
 
+    if GrimmoryExecutor.isOwnConnectionEvent() then
+        -- PocketBook: the system WiFi dialog of our own connection attempt
+        -- opened, the device is not going to sleep
+        logger:dbg("Suspend from our own WiFi connection attempt, ignored")
+        return
+    end
+
     self.reading_recorder:onSessionEnd()
 
     if self.settings:getSyncOnSuspend() then
@@ -263,6 +270,14 @@ end
 
 function Grimmory:onResume()
     logger:dbg("Device is resuming")
+
+    if GrimmoryExecutor.isOwnConnectionEvent() then
+        -- PocketBook: the system WiFi dialog of our own connection attempt
+        -- closed.  Checking the progress again would turn WiFi on again,
+        -- show the dialog again, and so on.
+        logger:dbg("Resume from our own WiFi connection attempt, ignored")
+        return
+    end
 
     if self.settings:getSyncReadingProgress() and self.settings:getSyncProgressOnResume() then
         self:pullProgressForOpenBook()
@@ -337,6 +352,7 @@ function Grimmory:onCloseDocument()
                 notify = close_sync,
                 progress_only = true,
                 smart = smart,
+                automatic = true,
             })
         end)
     end
@@ -401,7 +417,7 @@ function Grimmory:onSchedulePeriodicPush()
             local cancel, update = self.scheduler:interval(
                 frequency_seconds,
                 function()
-                    self:onGrimmorySync(false)
+                    self:onGrimmorySync(false, nil, nil, { automatic = true })
                 end
             )
 
@@ -477,8 +493,9 @@ end
 --- WiFi connected (by the user, KOReader or a plugin): send what is pending
 function Grimmory:onNetworkConnected()
     -- A new connection (maybe another network): try servers again that did
-    -- not answer before
+    -- not answer before, and turn WiFi on by itself again when needed
     HttpClient.forgetUnreachable()
+    GrimmoryExecutor.resumeAutoWifi()
     self:scheduleRetry(Shared.RETRY_DELAY_SECONDS)
 end
 

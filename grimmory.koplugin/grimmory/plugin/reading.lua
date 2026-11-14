@@ -87,7 +87,15 @@ function Grimmory:pullProgressForOpenBook()
                 local error_result = run_ok and latest_progress or ok
                 logger:err("Could not check reading progress", error_result)
 
+                if Shared.isQuietFailure(error_result) then
+                    -- Not tried (WiFi failed to connect before): said once already
+                    return
+                end
+
                 local reason = Shared.describeSyncError(error_result)
+                if reason and self.executor.isAutoWifiPaused() then
+                    reason = reason .. "\n" .. Shared.WIFI_PAUSED_NOTE
+                end
                 if reason then
                     self.dialog_manager:notify(T(_("Grimmory: could not check reading progress: %1"), reason), 3)
                 else
@@ -102,7 +110,9 @@ function Grimmory:pullProgressForOpenBook()
 
             self.dialog_manager:showApplyProgressConfirmation(latest_progress)
         end,
-        self.settings:getSyncEnableWifi()
+        self.settings:getSyncEnableWifi(),
+        -- Opening a book, waking up: automatic (one attempt, none while paused)
+        true
     )
 end
 

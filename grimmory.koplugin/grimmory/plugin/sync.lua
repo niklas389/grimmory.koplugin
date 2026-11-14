@@ -213,6 +213,8 @@ end
 ---  notify: show a non-blocking notification while a non-verbose sync runs.
 ---  progress_only: only push reading progress and sessions of `book_path`.
 ---  smart: with progress_only, also smart download the next volumes of its series.
+---  automatic: not started by hand (closing a book, periodic): WiFi is tried once, and not
+---  again after it failed to connect, until it works again.
 function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
     options = options or {}
     local enable_wifi = options.allow_enable_wifi ~= false and self.settings:getSyncEnableWifi()
@@ -469,9 +471,17 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
                         _("Grimmory synchronization has been interrupted")
                     )
                 end
+            elseif Shared.isQuietFailure(result) then
+                -- Not tried (WiFi failed to connect before): said once already
+                logger:info("Sync not run: WiFi is not turned on by itself after it failed to connect")
             else
                 logger:err("Failed sync", result)
-                notifyFailure(Shared.describeSyncError(result))
+                local reason = Shared.describeSyncError(result)
+                if options.automatic and self.executor.isAutoWifiPaused() and reason then
+                    -- From now on, automatic syncs wait for WiFi: say so once
+                    reason = reason .. "\n" .. Shared.WIFI_PAUSED_NOTE
+                end
+                notifyFailure(reason)
             end
 
             return
@@ -619,7 +629,8 @@ function Grimmory:onGrimmorySync(verbose, book_path, refresh_book, options)
 
     self.executor:background(
         background_callback,
-        enable_wifi
+        enable_wifi,
+        options.automatic
     )
 end
 
